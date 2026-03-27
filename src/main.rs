@@ -25,10 +25,12 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let runtime = tokio::runtime::Runtime::new()?;
 
+    let icon = load_icon();
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1024.0, 640.0])
-            .with_title("Portal"),
+            .with_title("Portal")
+            .with_icon(icon),
         ..Default::default()
     };
 
@@ -71,6 +73,19 @@ fn main() -> Result<()> {
     .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     Ok(())
+}
+
+fn load_icon() -> egui::IconData {
+    let png_bytes = include_bytes!("../assets/icon.png");
+    let img = image::load_from_memory_with_format(png_bytes, image::ImageFormat::Png)
+        .expect("failed to load icon")
+        .into_rgba8();
+    let (w, h) = img.dimensions();
+    egui::IconData {
+        rgba: img.into_raw(),
+        width: w,
+        height: h,
+    }
 }
 
 fn setup_fonts(ctx: &egui::Context) {

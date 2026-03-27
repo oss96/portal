@@ -202,6 +202,7 @@ struct BrowserState {
     transfer_state: TransferState,
     show_settings: bool,
     settings_draft: AppSettings,
+    confirm_delete: Option<Vec<fs::FileEntry>>,
 }
 
 struct PaneState {
@@ -251,6 +252,7 @@ impl PortalApp {
                 transfer_state: TransferState::Idle,
                 show_settings: false,
                 settings_draft: settings.clone(),
+                confirm_delete: None,
             }),
             first_frame: true,
             settings,
@@ -536,6 +538,7 @@ fn show_connect_view(
                             transfer_state: TransferState::Idle,
                             show_settings: false,
                             settings_draft: settings.clone(),
+                            confirm_delete: None,
                         });
                     }
                     Err(e) => {
@@ -576,6 +579,11 @@ fn show_browser_view(
         show_settings_window(ctx, state);
     }
 
+    // Delete confirmation dialog
+    if state.confirm_delete.is_some() {
+        show_delete_confirm(ctx, state, runtime);
+    }
+
     // Bottom panel
     egui::TopBottomPanel::bottom("bottom_panel")
         .min_height(28.0)
@@ -592,6 +600,23 @@ fn show_browser_view(
                     .clicked()
                 {
                     start_copy(state, runtime, false);
+                }
+                if ui
+                    .add_enabled(
+                        !is_transferring && !state.remote.selected.is_empty(),
+                        egui::Button::new(" \u{1F5D1} Delete "),
+                    )
+                    .clicked()
+                {
+                    let entries: Vec<fs::FileEntry> = state
+                        .remote
+                        .selected
+                        .iter()
+                        .filter_map(|&i| state.remote.entries.get(i).cloned())
+                        .collect();
+                    if !entries.is_empty() {
+                        state.confirm_delete = Some(entries);
+                    }
                 }
 
                 if is_transferring {
@@ -765,6 +790,73 @@ fn show_settings_window(ctx: &egui::Context, state: &mut BrowserState) {
         });
 
     state.show_settings = open;
+}
+
+fn show_delete_confirm(
+    ctx: &egui::Context,
+    state: &mut BrowserState,
+    runtime: &tokio::runtime::Runtime,
+) {
+    let entries = state.confirm_delete.as_ref().unwrap();
+    let count = entries.len();
+
+    let mut action = None; // None = keep open, Some(true) = delete, Some(false) = cancel
+
+    egui::Window::new("Confirm Delete")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(format!(
+                "Delete {} item(s) from the remote host?",
+                count
+            ));
+            ui.add_space(4.0);
+
+            egui::ScrollArea::vertical()
+                .max_height(200.0)
+                .show(ui, |ui| {
+                    for entry in entries {
+                        let icon = if entry.is_dir { "\u{1F4C1}" } else { "\u{1F4C4}" };
+                        ui.label(format!("{} {}", icon, entry.name));
+                    }
+                });
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .button(egui::RichText::new("Delete").color(egui::Color32::RED))
+                    .clicked()
+                {
+                    action = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    action = Some(false);
+                }
+            });
+        });
+
+    match action {
+        Some(true) => {
+            let entries = state.confirm_delete.take().unwrap();
+            match runtime.block_on(fs::delete_remote(&state.sftp, &state.remote.path, &entries)) {
+                Ok(n) => state.status = format!("Deleted {} item(s)", n),
+                Err(e) => state.status = format!("Delete error: {}", e),
+            }
+            // Refresh remote file list
+            match runtime.block_on(fs::list_remote(&state.sftp, &state.remote.path)) {
+                Ok(entries) => {
+                    state.remote.entries = entries;
+                    state.remote.selected.clear();
+                }
+                Err(e) => state.status = format!("Refresh error: {}", e),
+            }
+        }
+        Some(false) => {
+            state.confirm_delete = None;
+        }
+        None => {}
+    }
 }
 
 // ── Pane Rendering ─────────────────────────────────────────────────────

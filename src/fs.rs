@@ -63,6 +63,47 @@ pub async fn list_remote(sftp: &SftpSession, dir: &str) -> Result<Vec<FileEntry>
     Ok(entries)
 }
 
+/// Delete files and folders on the remote host via SFTP.
+pub async fn delete_remote(
+    sftp: &SftpSession,
+    base_dir: &str,
+    entries: &[FileEntry],
+) -> Result<usize> {
+    let base = base_dir.trim_end_matches('/');
+    let mut count = 0;
+    for entry in entries {
+        if entry.name == ".." {
+            continue;
+        }
+        let path = format!("{}/{}", base, entry.name);
+        if entry.is_dir {
+            delete_remote_recursive(sftp, &path).await?;
+        } else {
+            sftp.remove_file(&path).await?;
+        }
+        count += 1;
+    }
+    Ok(count)
+}
+
+async fn delete_remote_recursive(sftp: &SftpSession, path: &str) -> Result<()> {
+    let children = sftp.read_dir(path).await?;
+    for child in children {
+        let name = child.file_name();
+        if name == "." || name == ".." {
+            continue;
+        }
+        let child_path = format!("{}/{}", path, name);
+        if child.file_type().is_dir() {
+            Box::pin(delete_remote_recursive(sftp, &child_path)).await?;
+        } else {
+            sftp.remove_file(&child_path).await?;
+        }
+    }
+    sftp.remove_dir(path).await?;
+    Ok(())
+}
+
 fn sort_entries(entries: &mut [FileEntry]) {
     if entries.len() <= 1 {
         return;
