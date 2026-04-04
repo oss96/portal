@@ -68,8 +68,14 @@ fn persist_sessions(sessions: &[SavedSession]) {
 struct AppSettings {
     default_local_path: String,
     default_remote_path: String,
+    #[serde(default = "default_host_path")]
+    default_host_path: String,
     #[serde(default)]
     auto_connect: bool,
+}
+
+fn default_host_path() -> String {
+    "/".to_string()
 }
 
 impl Default for AppSettings {
@@ -80,6 +86,7 @@ impl Default for AppSettings {
                 .to_string_lossy()
                 .to_string(),
             default_remote_path: "/".to_string(),
+            default_host_path: "/".to_string(),
             auto_connect: false,
         }
     }
@@ -104,11 +111,23 @@ fn save_settings(settings: &AppSettings) {
 
 // ── Drag & Drop Payload ────────────────────────────────────────────────
 
+#[derive(Clone, Copy, PartialEq)]
+enum PaneId {
+    Local,
+    Remote,
+    Host,
+}
+
 #[derive(Clone)]
 struct DragPayload {
-    source_is_local: bool,
+    source: PaneId,
     entries: Vec<fs::FileEntry>,
     src_path: String,
+}
+
+enum DeleteTarget {
+    Remote,
+    Host,
 }
 
 // ── Transfer State ─────────────────────────────────────────────────────
@@ -197,18 +216,23 @@ struct BrowserState {
     sftp: Arc<SftpSession>,
     local: PaneState,
     remote: PaneState,
+    host: PaneState,
+    show_host: bool,
     status: String,
     connection_label: String,
     transfer_state: TransferState,
     show_settings: bool,
     settings_draft: AppSettings,
-    confirm_delete: Option<Vec<fs::FileEntry>>,
+    confirm_delete: Option<(DeleteTarget, Vec<fs::FileEntry>)>,
+    new_folder: Option<(PaneId, String)>,
+    merge_folders: Option<(PaneId, Vec<fs::FileEntry>, String, bool)>,
 }
 
 struct PaneState {
     path: String,
     entries: Vec<fs::FileEntry>,
     selected: HashSet<usize>,
+    last_clicked: Option<usize>,
 }
 
 // ── Construction ───────────────────────────────────────────────────────
@@ -232,6 +256,11 @@ impl PortalApp {
             .block_on(fs::list_remote(&sftp, &remote_path))
             .unwrap_or_default();
 
+        let host_path = settings.default_host_path.clone();
+        let host_entries = runtime
+            .block_on(fs::list_remote(&sftp, &host_path))
+            .unwrap_or_default();
+
         Ok(Self {
             runtime,
             view: View::Browser(BrowserState {
@@ -241,18 +270,29 @@ impl PortalApp {
                     path: local_path,
                     entries: local_entries,
                     selected: HashSet::new(),
+                    last_clicked: None,
                 },
                 remote: PaneState {
                     path: remote_path,
                     entries: remote_entries,
                     selected: HashSet::new(),
+                    last_clicked: None,
                 },
+                host: PaneState {
+                    path: host_path,
+                    entries: host_entries,
+                    selected: HashSet::new(),
+                    last_clicked: None,
+                },
+                show_host: false,
                 status: "Ready".to_string(),
                 connection_label: format!("{}@{}", user, host),
                 transfer_state: TransferState::Idle,
                 show_settings: false,
                 settings_draft: settings.clone(),
                 confirm_delete: None,
+                new_folder: None,
+                merge_folders: None,
             }),
             first_frame: true,
             settings,
@@ -312,13 +352,19 @@ impl eframe::App for PortalApp {
 
                 // Apply settings if saved
                 if !state.show_settings {
-                    // Check if settings changed
                     if state.settings_draft.default_local_path != self.settings.default_local_path
                         || state.settings_draft.default_remote_path
                             != self.settings.default_remote_path
                     {
                         self.settings = state.settings_draft.clone();
                     }
+                }
+
+                // Auto-persist host pane path when it changes
+                if state.host.path != self.settings.default_host_path {
+                    self.settings.default_host_path = state.host.path.clone();
+                    state.settings_draft.default_host_path = state.host.path.clone();
+                    save_settings(&self.settings);
                 }
             }
         }
@@ -357,8 +403,14 @@ fn poll_transfer(state: &mut BrowserState, runtime: &tokio::runtime::Runtime) {
                         {
                             state.remote.entries = entries;
                         }
+                        if state.show_host {
+                            if let Ok(entries) = runtime.block_on(fs::list_remote(&state.sftp, &state.host.path)) {
+                                state.host.entries = entries;
+                            }
+                        }
                         state.local.selected.clear();
                         state.remote.selected.clear();
+                        state.host.selected.clear();
 
                         state.transfer_state = TransferState::Done {
                             message: format!(
@@ -520,6 +572,11 @@ fn show_connect_view(
                             .block_on(fs::list_remote(&sftp, &remote_path))
                             .unwrap_or_default();
 
+                        let host_path = settings.default_host_path.clone();
+                        let host_entries = runtime
+                            .block_on(fs::list_remote(&sftp, &host_path))
+                            .unwrap_or_default();
+
                         result = Some(BrowserState {
                             handle,
                             sftp,
@@ -527,18 +584,29 @@ fn show_connect_view(
                                 path: local_path,
                                 entries: local_entries,
                                 selected: HashSet::new(),
+                    last_clicked: None,
                             },
                             remote: PaneState {
                                 path: remote_path,
                                 entries: remote_entries,
                                 selected: HashSet::new(),
+                    last_clicked: None,
                             },
+                            host: PaneState {
+                                path: host_path,
+                                entries: host_entries,
+                                selected: HashSet::new(),
+                    last_clicked: None,
+                            },
+                            show_host: false,
                             status: "Connected".to_string(),
                             connection_label: format!("{}@{}", state.user, state.host),
                             transfer_state: TransferState::Idle,
                             show_settings: false,
                             settings_draft: settings.clone(),
                             confirm_delete: None,
+                new_folder: None,
+                merge_folders: None,
                         });
                     }
                     Err(e) => {
@@ -584,6 +652,16 @@ fn show_browser_view(
         show_delete_confirm(ctx, state, runtime);
     }
 
+    // New folder dialog
+    if state.new_folder.is_some() {
+        show_new_folder_dialog(ctx, state, runtime);
+    }
+
+    // Merge folders dialog
+    if state.merge_folders.is_some() {
+        show_merge_dialog(ctx, state, runtime);
+    }
+
     // Bottom panel
     egui::TopBottomPanel::bottom("bottom_panel")
         .min_height(28.0)
@@ -601,21 +679,142 @@ fn show_browser_view(
                 {
                     start_copy(state, runtime, false);
                 }
+                // Determine which remote pane has a selection (host takes priority)
+                let has_remote_sel = !state.remote.selected.is_empty();
+                let has_host_sel = !state.host.selected.is_empty();
+                let active_remote_pane = if has_host_sel {
+                    Some((DeleteTarget::Host, PaneId::Host))
+                } else if has_remote_sel {
+                    Some((DeleteTarget::Remote, PaneId::Remote))
+                } else {
+                    None
+                };
+
+                // Delete: operates on whichever remote pane has a selection
                 if ui
                     .add_enabled(
-                        !is_transferring && !state.remote.selected.is_empty(),
+                        !is_transferring && active_remote_pane.is_some(),
                         egui::Button::new(" \u{1F5D1} Delete "),
                     )
                     .clicked()
                 {
-                    let entries: Vec<fs::FileEntry> = state
-                        .remote
+                    let (target, pane_id) = active_remote_pane.unwrap();
+                    let pane = match pane_id {
+                        PaneId::Host => &state.host,
+                        _ => &state.remote,
+                    };
+                    let entries: Vec<fs::FileEntry> = pane
                         .selected
                         .iter()
-                        .filter_map(|&i| state.remote.entries.get(i).cloned())
+                        .filter_map(|&i| pane.entries.get(i).cloned())
                         .collect();
                     if !entries.is_empty() {
-                        state.confirm_delete = Some(entries);
+                        state.confirm_delete = Some((target, entries));
+                    }
+                }
+
+                // New Folder: defaults to Remote, or Host if host has selection
+                if ui.button(" \u{1F4C1}\u{207A} New Folder ").clicked() {
+                    let pane_id = if has_host_sel {
+                        PaneId::Host
+                    } else {
+                        PaneId::Remote
+                    };
+                    state.new_folder = Some((pane_id, String::new()));
+                }
+
+                // Merge: operates on whichever remote pane has directory selections
+                {
+                    let dir_count = |pane: &PaneState| {
+                        pane.selected
+                            .iter()
+                            .filter(|&&i| pane.entries.get(i).is_some_and(|e| e.is_dir && e.name != ".."))
+                            .count()
+                    };
+                    let merge_pane = if dir_count(&state.host) >= 2 {
+                        Some(PaneId::Host)
+                    } else if dir_count(&state.remote) >= 2 {
+                        Some(PaneId::Remote)
+                    } else {
+                        None
+                    };
+                    if ui
+                        .add_enabled(merge_pane.is_some(), egui::Button::new(" \u{1F500} Merge "))
+                        .on_hover_text("Merge contents of selected folders into a new folder")
+                        .clicked()
+                    {
+                        let pane_id = merge_pane.unwrap();
+                        let pane = match pane_id {
+                            PaneId::Host => &state.host,
+                            _ => &state.remote,
+                        };
+                        let folders: Vec<fs::FileEntry> = pane
+                            .selected
+                            .iter()
+                            .filter_map(|&i| pane.entries.get(i).cloned())
+                            .filter(|e| e.is_dir && e.name != "..")
+                            .collect();
+                        state.merge_folders = Some((pane_id, folders, String::new(), true));
+                    }
+                }
+
+                // Copy/Move: only when Host pane is visible (needs two remote panes)
+                if state.show_host {
+                    ui.separator();
+                    let has_any = has_remote_sel || has_host_sel;
+
+                    if ui
+                        .add_enabled(has_any, egui::Button::new(" \u{1F4CB} Copy "))
+                        .on_hover_text("Copy selected files to the other pane's directory")
+                        .clicked()
+                    {
+                        let (src_pane, dst_pane) = if has_host_sel {
+                            (&state.host, &state.remote)
+                        } else {
+                            (&state.remote, &state.host)
+                        };
+                        let entries: Vec<fs::FileEntry> = src_pane
+                            .selected
+                            .iter()
+                            .filter_map(|&i| src_pane.entries.get(i).cloned())
+                            .collect();
+                        let src = src_pane.path.clone();
+                        let dst = dst_pane.path.clone();
+                        match runtime.block_on(fs::copy_remote(
+                            &state.handle, &src, &entries, &dst,
+                        )) {
+                            Ok(n) => state.status = format!("Copied {} item(s)", n),
+                            Err(e) => state.status = format!("Copy error: {}", e),
+                        }
+                        refresh_remote_pane(&state.sftp, runtime, &mut state.remote);
+                        refresh_remote_pane(&state.sftp, runtime, &mut state.host);
+                    }
+
+                    if ui
+                        .add_enabled(has_any, egui::Button::new(" \u{2702} Move "))
+                        .on_hover_text("Move selected files to the other pane's directory")
+                        .clicked()
+                    {
+                        let (src_pane, dst_pane) = if has_host_sel {
+                            (&state.host, &state.remote)
+                        } else {
+                            (&state.remote, &state.host)
+                        };
+                        let entries: Vec<fs::FileEntry> = src_pane
+                            .selected
+                            .iter()
+                            .filter_map(|&i| src_pane.entries.get(i).cloned())
+                            .collect();
+                        let src = src_pane.path.clone();
+                        let dst = dst_pane.path.clone();
+                        match runtime.block_on(fs::move_remote(
+                            &state.handle, &src, &entries, &dst,
+                        )) {
+                            Ok(n) => state.status = format!("Moved {} item(s)", n),
+                            Err(e) => state.status = format!("Move error: {}", e),
+                        }
+                        refresh_remote_pane(&state.sftp, runtime, &mut state.remote);
+                        refresh_remote_pane(&state.sftp, runtime, &mut state.host);
                     }
                 }
 
@@ -693,41 +892,95 @@ fn show_browser_view(
                     }
                 }
 
-                // Settings button (right side)
+                // Right-aligned buttons
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("\u{2699} Settings").clicked() {
                         state.show_settings = !state.show_settings;
+                    }
+                    let host_label = if state.show_host {
+                        "\u{1F4C2} Host"
+                    } else {
+                        "\u{1F4C1} Host"
+                    };
+                    if ui.button(host_label).clicked() {
+                        state.show_host = !state.show_host;
                     }
                 });
             });
         });
 
     // Left panel: local files
+    let local_width = if state.show_host {
+        ctx.screen_rect().width() / 3.0 - 10.0
+    } else {
+        ctx.screen_rect().width() / 2.0 - 10.0
+    };
     let local_response = egui::SidePanel::left("local_panel")
-        .default_width(ctx.screen_rect().width() / 2.0 - 10.0)
+        .default_width(local_width)
         .resizable(true)
         .show(ctx, |ui| {
             render_pane_header(ui, "Local", &state.local.path);
-            render_file_list(ui, &mut state.local, true)
+            render_file_list(ui, &mut state.local, PaneId::Local)
         });
 
     if let Some(payload) = local_response.response.dnd_release_payload::<DragPayload>() {
-        if !payload.source_is_local && !is_transferring {
-            start_copy_entries(state, runtime, false, &payload.entries, &payload.src_path);
+        match payload.source {
+            PaneId::Remote | PaneId::Host if !is_transferring => {
+                // Download from remote/host to local via SCP
+                start_copy_entries(state, runtime, false, &payload.entries, &payload.src_path);
+            }
+            _ => {}
         }
     }
     if let Some(action) = local_response.inner {
         handle_local_action(state, action);
     }
 
+    // Right panel: host files (only when toggled on)
+    if state.show_host {
+        let host_response = egui::SidePanel::right("host_panel")
+            .default_width(ctx.screen_rect().width() / 3.0 - 10.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                render_pane_header(ui, "Host", &state.host.path);
+                render_file_list(ui, &mut state.host, PaneId::Host)
+            });
+
+        if let Some(payload) = host_response.response.dnd_release_payload::<DragPayload>() {
+            match payload.source {
+                PaneId::Local if !is_transferring => {
+                    // Upload from local to host's current dir via SCP
+                    start_copy_entries(state, runtime, true, &payload.entries, &payload.src_path);
+                }
+                PaneId::Remote => {
+                    // Remote copy within the remote host
+                    let src = payload.src_path.clone();
+                    let dst = state.host.path.clone();
+                    match runtime.block_on(fs::copy_remote(
+                        &state.handle, &src, &payload.entries, &dst,
+                    )) {
+                        Ok(n) => state.status = format!("Copied {} item(s)", n),
+                        Err(e) => state.status = format!("Copy error: {}", e),
+                    }
+                    refresh_remote_pane(&state.sftp, runtime, &mut state.remote);
+                    refresh_remote_pane(&state.sftp, runtime, &mut state.host);
+                }
+                _ => {}
+            }
+        }
+        if let Some(action) = host_response.inner {
+            handle_host_action(state, runtime, action);
+        }
+    }
+
     // Central panel: remote files
     let remote_response = egui::CentralPanel::default().show(ctx, |ui| {
         render_pane_header(ui, "Remote", &state.remote.path);
-        render_file_list(ui, &mut state.remote, false)
+        render_file_list(ui, &mut state.remote, PaneId::Remote)
     });
 
     if let Some(payload) = remote_response.response.dnd_release_payload::<DragPayload>() {
-        if payload.source_is_local && !is_transferring {
+        if payload.source == PaneId::Local && !is_transferring {
             start_copy_entries(state, runtime, true, &payload.entries, &payload.src_path);
         }
     }
@@ -767,6 +1020,13 @@ fn show_settings_window(ctx: &egui::Context, state: &mut BrowserState) {
                     );
                     ui.end_row();
 
+                    ui.label("Default host path:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut state.settings_draft.default_host_path)
+                            .desired_width(280.0),
+                    );
+                    ui.end_row();
+
                     ui.label("Auto-connect:");
                     ui.checkbox(
                         &mut state.settings_draft.auto_connect,
@@ -797,8 +1057,12 @@ fn show_delete_confirm(
     state: &mut BrowserState,
     runtime: &tokio::runtime::Runtime,
 ) {
-    let entries = state.confirm_delete.as_ref().unwrap();
+    let (target, entries) = state.confirm_delete.as_ref().unwrap();
     let count = entries.len();
+    let target_label = match target {
+        DeleteTarget::Remote => "remote host",
+        DeleteTarget::Host => "local host",
+    };
 
     let mut action = None; // None = keep open, Some(true) = delete, Some(false) = cancel
 
@@ -808,8 +1072,8 @@ fn show_delete_confirm(
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
             ui.label(format!(
-                "Delete {} item(s) from the remote host?",
-                count
+                "Delete {} item(s) from the {}?",
+                count, target_label
             ));
             ui.add_space(4.0);
 
@@ -838,22 +1102,231 @@ fn show_delete_confirm(
 
     match action {
         Some(true) => {
-            let entries = state.confirm_delete.take().unwrap();
-            match runtime.block_on(fs::delete_remote(&state.sftp, &state.remote.path, &entries)) {
-                Ok(n) => state.status = format!("Deleted {} item(s)", n),
-                Err(e) => state.status = format!("Delete error: {}", e),
-            }
-            // Refresh remote file list
-            match runtime.block_on(fs::list_remote(&state.sftp, &state.remote.path)) {
-                Ok(entries) => {
-                    state.remote.entries = entries;
-                    state.remote.selected.clear();
+            let (target, entries) = state.confirm_delete.take().unwrap();
+            match target {
+                DeleteTarget::Remote => {
+                    match runtime.block_on(fs::delete_remote(&state.sftp, &state.remote.path, &entries)) {
+                        Ok(n) => state.status = format!("Deleted {} item(s)", n),
+                        Err(e) => state.status = format!("Delete error: {}", e),
+                    }
+                    if let Ok(entries) = runtime.block_on(fs::list_remote(&state.sftp, &state.remote.path)) {
+                        state.remote.entries = entries;
+                        state.remote.selected.clear();
+                    }
                 }
-                Err(e) => state.status = format!("Refresh error: {}", e),
+                DeleteTarget::Host => {
+                    match runtime.block_on(fs::delete_remote(&state.sftp, &state.host.path, &entries)) {
+                        Ok(n) => state.status = format!("Deleted {} item(s)", n),
+                        Err(e) => state.status = format!("Delete error: {}", e),
+                    }
+                    if let Ok(entries) = runtime.block_on(fs::list_remote(&state.sftp, &state.host.path)) {
+                        state.host.entries = entries;
+                        state.host.selected.clear();
+                    }
+                }
             }
         }
         Some(false) => {
             state.confirm_delete = None;
+        }
+        None => {}
+    }
+}
+
+fn show_new_folder_dialog(
+    ctx: &egui::Context,
+    state: &mut BrowserState,
+    runtime: &tokio::runtime::Runtime,
+) {
+    let mut action = None; // None = keep open, Some(true) = create, Some(false) = cancel
+
+    let (pane_id, _) = state.new_folder.as_ref().unwrap();
+    let pane_label = match pane_id {
+        PaneId::Remote => "Remote",
+        PaneId::Host => "Host",
+        PaneId::Local => "Local",
+    };
+
+    egui::Window::new("New Folder")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(format!("Create folder in {} pane:", pane_label));
+            ui.add_space(4.0);
+
+            let (_, name) = state.new_folder.as_mut().unwrap();
+            let te = ui.add(
+                egui::TextEdit::singleline(name)
+                    .desired_width(250.0)
+                    .hint_text("folder name"),
+            );
+            // Auto-focus the text field
+            te.request_focus();
+
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) && !name.trim().is_empty() {
+                action = Some(true);
+            }
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(
+                        !state.new_folder.as_ref().unwrap().1.trim().is_empty(),
+                        egui::Button::new("Create"),
+                    )
+                    .clicked()
+                {
+                    action = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    action = Some(false);
+                }
+            });
+        });
+
+    match action {
+        Some(true) => {
+            let (pane_id, name) = state.new_folder.take().unwrap();
+            let name = name.trim().to_string();
+            let pane = match pane_id {
+                PaneId::Remote => &mut state.remote,
+                PaneId::Host => &mut state.host,
+                PaneId::Local => &mut state.local,
+            };
+            let new_dir = format!("{}/{}", pane.path.trim_end_matches('/'), name);
+            match runtime.block_on(state.sftp.create_dir(&new_dir)) {
+                Ok(()) => {
+                    state.status = format!("Created folder: {}", name);
+                    // Refresh the pane
+                    if let Ok(entries) =
+                        runtime.block_on(fs::list_remote(&state.sftp, &pane.path))
+                    {
+                        pane.entries = entries;
+                        pane.selected.clear();
+                    }
+                }
+                Err(e) => state.status = format!("Error creating folder: {}", e),
+            }
+        }
+        Some(false) => {
+            state.new_folder = None;
+        }
+        None => {}
+    }
+}
+
+fn show_merge_dialog(
+    ctx: &egui::Context,
+    state: &mut BrowserState,
+    runtime: &tokio::runtime::Runtime,
+) {
+    let (_, folders, _, _) = state.merge_folders.as_ref().unwrap();
+    let folder_count = folders.len();
+
+    let mut action = None;
+
+    egui::Window::new("Merge Folders")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(format!(
+                "Merge contents of {} folder(s) into a new folder:",
+                folder_count
+            ));
+            ui.add_space(4.0);
+
+            egui::ScrollArea::vertical()
+                .max_height(120.0)
+                .show(ui, |ui| {
+                    let (_, folders, _, _) = state.merge_folders.as_ref().unwrap();
+                    for f in folders {
+                        ui.label(format!("\u{1F4C1} {}", f.name));
+                    }
+                });
+
+            ui.add_space(8.0);
+            let (_, _, name, delete_originals) = state.merge_folders.as_mut().unwrap();
+            let te = ui.add(
+                egui::TextEdit::singleline(name)
+                    .desired_width(250.0)
+                    .hint_text("new folder name"),
+            );
+            te.request_focus();
+
+            ui.add_space(4.0);
+            ui.checkbox(delete_originals, "Delete original folders after merge");
+
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) && !name.trim().is_empty() {
+                action = Some(true);
+            }
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(
+                        !state.merge_folders.as_ref().unwrap().2.trim().is_empty(),
+                        egui::Button::new("Merge"),
+                    )
+                    .clicked()
+                {
+                    action = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    action = Some(false);
+                }
+            });
+        });
+
+    match action {
+        Some(true) => {
+            let (pane_id, folders, name, delete_originals) = state.merge_folders.take().unwrap();
+            let name = name.trim().to_string();
+            let base_path = match pane_id {
+                PaneId::Host => state.host.path.clone(),
+                _ => state.remote.path.clone(),
+            };
+            let new_dir = format!("{}/{}", base_path.trim_end_matches('/'), name);
+
+            // Create the target folder, then merge contents
+            match runtime.block_on(state.sftp.create_dir(&new_dir)) {
+                Ok(()) => {
+                    match runtime.block_on(fs::merge_folders_remote(
+                        &state.handle,
+                        &base_path,
+                        &folders,
+                        &new_dir,
+                        delete_originals,
+                    )) {
+                        Ok(n) => {
+                            if delete_originals {
+                                state.status = format!(
+                                    "Merged {} folder(s) into {} (originals deleted)",
+                                    n, name
+                                );
+                            } else {
+                                state.status =
+                                    format!("Merged {} folder(s) into {}", n, name);
+                            }
+                        }
+                        Err(e) => state.status = format!("Merge error: {}", e),
+                    }
+                }
+                Err(e) => state.status = format!("Error creating folder: {}", e),
+            }
+            // Refresh the pane
+            let pane = match pane_id {
+                PaneId::Host => &mut state.host,
+                _ => &mut state.remote,
+            };
+            if let Ok(entries) = runtime.block_on(fs::list_remote(&state.sftp, &base_path)) {
+                pane.entries = entries;
+                pane.selected.clear();
+            }
+        }
+        Some(false) => {
+            state.merge_folders = None;
         }
         None => {}
     }
@@ -878,7 +1351,7 @@ enum PaneAction {
 fn render_file_list(
     ui: &mut egui::Ui,
     pane: &mut PaneState,
-    is_local: bool,
+    pane_id: PaneId,
 ) -> Option<PaneAction> {
     let mut action: Option<PaneAction> = None;
 
@@ -971,7 +1444,7 @@ fn render_file_list(
                         vec![entry.clone()]
                     };
                     response.dnd_set_drag_payload(DragPayload {
-                        source_is_local: is_local,
+                        source: pane_id,
                         entries: drag_entries,
                         src_path: pane.path.clone(),
                     });
@@ -987,10 +1460,33 @@ fn render_file_list(
                     PaneAction::EnterDir(entry.name.clone())
                 });
             } else if row_response.clicked() && !is_parent {
-                if is_selected {
-                    pane.selected.remove(&i);
+                let modifiers = ui.input(|i| i.modifiers);
+                if modifiers.shift && pane.last_clicked.is_some() {
+                    // Shift+click: select range from last_clicked to current
+                    let anchor = pane.last_clicked.unwrap();
+                    let lo = anchor.min(i);
+                    let hi = anchor.max(i);
+                    if !modifiers.ctrl && !modifiers.command {
+                        pane.selected.clear();
+                    }
+                    for idx in lo..=hi {
+                        if idx != 0 || pane.entries.first().is_none_or(|e| e.name != "..") {
+                            pane.selected.insert(idx);
+                        }
+                    }
+                } else if modifiers.ctrl || modifiers.command {
+                    // Ctrl+click: toggle single item
+                    if is_selected {
+                        pane.selected.remove(&i);
+                    } else {
+                        pane.selected.insert(i);
+                    }
+                    pane.last_clicked = Some(i);
                 } else {
+                    // Plain click: select only this item
+                    pane.selected.clear();
                     pane.selected.insert(i);
+                    pane.last_clicked = Some(i);
                 }
             }
         }
@@ -1001,24 +1497,76 @@ fn render_file_list(
 
 // ── Navigation ─────────────────────────────────────────────────────────
 
-fn handle_local_action(state: &mut BrowserState, action: PaneAction) {
+fn navigate_local_pane(pane: &mut PaneState, action: PaneAction, status: &mut String) {
     let new_path = match action {
-        PaneAction::EnterDir(name) => PathBuf::from(&state.local.path)
+        PaneAction::EnterDir(name) => PathBuf::from(&pane.path)
             .join(&name)
             .to_string_lossy()
             .to_string(),
-        PaneAction::GoParent => PathBuf::from(&state.local.path)
+        PaneAction::GoParent => PathBuf::from(&pane.path)
             .parent()
             .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| state.local.path.clone()),
+            .unwrap_or_else(|| pane.path.clone()),
     };
     match fs::list_local(&PathBuf::from(&new_path)) {
         Ok(entries) => {
-            state.local.path = new_path;
-            state.local.entries = entries;
-            state.local.selected.clear();
+            pane.path = new_path;
+            pane.entries = entries;
+            pane.selected.clear();
         }
-        Err(e) => state.status = format!("Error: {}", e),
+        Err(e) => *status = format!("Error: {}", e),
+    }
+}
+
+fn handle_local_action(state: &mut BrowserState, action: PaneAction) {
+    navigate_local_pane(&mut state.local, action, &mut state.status);
+}
+
+fn handle_host_action(
+    state: &mut BrowserState,
+    runtime: &tokio::runtime::Runtime,
+    action: PaneAction,
+) {
+    navigate_remote_pane(&state.sftp, runtime, &mut state.host, action, &mut state.status);
+}
+
+fn refresh_remote_pane(
+    sftp: &Arc<SftpSession>,
+    runtime: &tokio::runtime::Runtime,
+    pane: &mut PaneState,
+) {
+    if let Ok(entries) = runtime.block_on(fs::list_remote(sftp, &pane.path)) {
+        pane.entries = entries;
+        pane.selected.clear();
+    }
+}
+
+fn navigate_remote_pane(
+    sftp: &Arc<SftpSession>,
+    runtime: &tokio::runtime::Runtime,
+    pane: &mut PaneState,
+    action: PaneAction,
+    status: &mut String,
+) {
+    let new_path = match action {
+        PaneAction::EnterDir(name) => {
+            format!("{}/{}", pane.path.trim_end_matches('/'), name)
+        }
+        PaneAction::GoParent => {
+            let p = pane.path.trim_end_matches('/');
+            match p.rfind('/') {
+                Some(0) | None => "/".to_string(),
+                Some(i) => p[..i].to_string(),
+            }
+        }
+    };
+    match runtime.block_on(fs::list_remote(sftp, &new_path)) {
+        Ok(entries) => {
+            pane.path = new_path;
+            pane.entries = entries;
+            pane.selected.clear();
+        }
+        Err(e) => *status = format!("Error: {}", e),
     }
 }
 
@@ -1027,26 +1575,7 @@ fn handle_remote_action(
     runtime: &tokio::runtime::Runtime,
     action: PaneAction,
 ) {
-    let new_path = match action {
-        PaneAction::EnterDir(name) => {
-            format!("{}/{}", state.remote.path.trim_end_matches('/'), name)
-        }
-        PaneAction::GoParent => {
-            let p = state.remote.path.trim_end_matches('/');
-            match p.rfind('/') {
-                Some(0) | None => "/".to_string(),
-                Some(i) => p[..i].to_string(),
-            }
-        }
-    };
-    match runtime.block_on(fs::list_remote(&state.sftp, &new_path)) {
-        Ok(entries) => {
-            state.remote.path = new_path;
-            state.remote.entries = entries;
-            state.remote.selected.clear();
-        }
-        Err(e) => state.status = format!("Error: {}", e),
-    }
+    navigate_remote_pane(&state.sftp, runtime, &mut state.remote, action, &mut state.status);
 }
 
 // ── File Transfer ──────────────────────────────────────────────────────

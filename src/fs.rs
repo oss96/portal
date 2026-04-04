@@ -1,4 +1,5 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
+use russh::client;
 use russh_sftp::client::SftpSession;
 use std::path::Path;
 
@@ -102,6 +103,126 @@ async fn delete_remote_recursive(sftp: &SftpSession, path: &str) -> Result<()> {
     }
     sftp.remove_dir(path).await?;
     Ok(())
+}
+
+/// Copy files/folders on the remote host via `cp -r`.
+pub async fn copy_remote<H: client::Handler>(
+    handle: &client::Handle<H>,
+    base_dir: &str,
+    entries: &[FileEntry],
+    dst_dir: &str,
+) -> Result<usize> {
+    let base = base_dir.trim_end_matches('/');
+    let dst = dst_dir.trim_end_matches('/');
+    let mut count = 0;
+    for entry in entries {
+        if entry.name == ".." {
+            continue;
+        }
+        let src_path = format!("{}/{}", base, entry.name);
+        let dst_path = format!("{}/{}", dst, entry.name);
+        let cmd = format!(
+            "cp -r {} {}",
+            shell_escape(&src_path),
+            shell_escape(&dst_path)
+        );
+        exec_remote_cmd(handle, &cmd).await?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Move files/folders on the remote host via `mv`.
+pub async fn move_remote<H: client::Handler>(
+    handle: &client::Handle<H>,
+    base_dir: &str,
+    entries: &[FileEntry],
+    dst_dir: &str,
+) -> Result<usize> {
+    let base = base_dir.trim_end_matches('/');
+    let dst = dst_dir.trim_end_matches('/');
+    let mut count = 0;
+    for entry in entries {
+        if entry.name == ".." {
+            continue;
+        }
+        let src_path = format!("{}/{}", base, entry.name);
+        let dst_path = format!("{}/{}", dst, entry.name);
+        let cmd = format!(
+            "mv {} {}",
+            shell_escape(&src_path),
+            shell_escape(&dst_path)
+        );
+        exec_remote_cmd(handle, &cmd).await?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Merge the contents of multiple remote folders into a single new folder.
+/// Copies the *contents* of each folder (not the folder itself) into `new_folder`.
+/// If `delete_originals` is true, removes each source folder after copying.
+pub async fn merge_folders_remote<H: client::Handler>(
+    handle: &client::Handle<H>,
+    base_dir: &str,
+    folders: &[FileEntry],
+    new_folder: &str,
+    delete_originals: bool,
+) -> Result<usize> {
+    let base = base_dir.trim_end_matches('/');
+    let dst = new_folder.trim_end_matches('/');
+    let mut count = 0;
+    for entry in folders {
+        if entry.name == ".." || !entry.is_dir {
+            continue;
+        }
+        let src_dir = format!("{}/{}", base, entry.name);
+        let src_contents = format!("{}/.", src_dir);
+        let dst_slash = format!("{}/", dst);
+        let cmd = if delete_originals {
+            format!(
+                "cp -r {} {} && rm -rf {}",
+                shell_escape(&src_contents),
+                shell_escape(&dst_slash),
+                shell_escape(&src_dir)
+            )
+        } else {
+            format!("cp -r {} {}", shell_escape(&src_contents), shell_escape(&dst_slash))
+        };
+        exec_remote_cmd(handle, &cmd).await?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+async fn exec_remote_cmd<H: client::Handler>(
+    handle: &client::Handle<H>,
+    cmd: &str,
+) -> Result<()> {
+    let mut channel = handle.channel_open_session().await?;
+    channel.exec(true, cmd).await?;
+    let mut status = None;
+    // Don't break on Eof/Close — ExitStatus can arrive after them.
+    // Only break on None (channel fully closed).
+    loop {
+        match channel.wait().await {
+            Some(russh::ChannelMsg::ExitStatus { exit_status }) => {
+                status = Some(exit_status);
+            }
+            Some(_) => {}
+            None => break,
+        }
+    }
+    if let Some(code) = status {
+        if code != 0 {
+            bail!("Remote command failed (exit {}): {}", code, cmd);
+        }
+    }
+    Ok(())
+}
+
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 fn sort_entries(entries: &mut [FileEntry]) {
