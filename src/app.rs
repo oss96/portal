@@ -230,6 +230,7 @@ struct BrowserState {
 
 struct PaneState {
     path: String,
+    path_input: String,
     entries: Vec<fs::FileEntry>,
     selected: HashSet<usize>,
     last_clicked: Option<usize>,
@@ -267,18 +268,21 @@ impl PortalApp {
                 handle,
                 sftp,
                 local: PaneState {
+                    path_input: local_path.clone(),
                     path: local_path,
                     entries: local_entries,
                     selected: HashSet::new(),
                     last_clicked: None,
                 },
                 remote: PaneState {
+                    path_input: remote_path.clone(),
                     path: remote_path,
                     entries: remote_entries,
                     selected: HashSet::new(),
                     last_clicked: None,
                 },
                 host: PaneState {
+                    path_input: host_path.clone(),
                     path: host_path,
                     entries: host_entries,
                     selected: HashSet::new(),
@@ -581,18 +585,21 @@ fn show_connect_view(
                             handle,
                             sftp,
                             local: PaneState {
+                                path_input: local_path.clone(),
                                 path: local_path,
                                 entries: local_entries,
                                 selected: HashSet::new(),
                     last_clicked: None,
                             },
                             remote: PaneState {
+                                path_input: remote_path.clone(),
                                 path: remote_path,
                                 entries: remote_entries,
                                 selected: HashSet::new(),
                     last_clicked: None,
                             },
                             host: PaneState {
+                                path_input: host_path.clone(),
                                 path: host_path,
                                 entries: host_entries,
                                 selected: HashSet::new(),
@@ -919,8 +926,9 @@ fn show_browser_view(
         .default_width(local_width)
         .resizable(true)
         .show(ctx, |ui| {
-            render_pane_header(ui, "Local", &state.local.path);
-            render_file_list(ui, &mut state.local, PaneId::Local)
+            let header_action = render_pane_header(ui, "Local", &mut state.local, true);
+            let list_action = render_file_list(ui, &mut state.local, PaneId::Local);
+            header_action.or(list_action)
         });
 
     if let Some(payload) = local_response.response.dnd_release_payload::<DragPayload>() {
@@ -942,8 +950,9 @@ fn show_browser_view(
             .default_width(ctx.screen_rect().width() / 3.0 - 10.0)
             .resizable(true)
             .show(ctx, |ui| {
-                render_pane_header(ui, "Host", &state.host.path);
-                render_file_list(ui, &mut state.host, PaneId::Host)
+                let header_action = render_pane_header(ui, "Host", &mut state.host, false);
+                let list_action = render_file_list(ui, &mut state.host, PaneId::Host);
+                header_action.or(list_action)
             });
 
         if let Some(payload) = host_response.response.dnd_release_payload::<DragPayload>() {
@@ -975,8 +984,9 @@ fn show_browser_view(
 
     // Central panel: remote files
     let remote_response = egui::CentralPanel::default().show(ctx, |ui| {
-        render_pane_header(ui, "Remote", &state.remote.path);
-        render_file_list(ui, &mut state.remote, PaneId::Remote)
+        let header_action = render_pane_header(ui, "Remote", &mut state.remote, false);
+        let list_action = render_file_list(ui, &mut state.remote, PaneId::Remote);
+        header_action.or(list_action)
     });
 
     if let Some(payload) = remote_response.response.dnd_release_payload::<DragPayload>() {
@@ -1334,18 +1344,60 @@ fn show_merge_dialog(
 
 // ── Pane Rendering ─────────────────────────────────────────────────────
 
-fn render_pane_header(ui: &mut egui::Ui, title: &str, path: &str) {
+fn render_pane_header(
+    ui: &mut egui::Ui,
+    title: &str,
+    pane: &mut PaneState,
+    show_drives: bool,
+) -> Option<PaneAction> {
+    let mut action: Option<PaneAction> = None;
     ui.horizontal(|ui| {
         ui.strong(title);
         ui.separator();
-        ui.label(path);
+
+        if show_drives {
+            let drives = fs::list_drives();
+            let current_drive = current_drive_root(&pane.path);
+            egui::ComboBox::from_id_salt(format!("{}_drives", title))
+                .width(70.0)
+                .selected_text(if current_drive.is_empty() {
+                    "Drive".to_string()
+                } else {
+                    current_drive.clone()
+                })
+                .show_ui(ui, |ui| {
+                    for d in drives {
+                        if ui.selectable_label(d == current_drive, &d).clicked() {
+                            action = Some(PaneAction::JumpToPath(d));
+                        }
+                    }
+                });
+        }
+
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut pane.path_input).desired_width(f32::INFINITY),
+        );
+        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            action = Some(PaneAction::JumpToPath(pane.path_input.clone()));
+        }
     });
     ui.separator();
+    action
+}
+
+fn current_drive_root(path: &str) -> String {
+    let bytes = path.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+        format!("{}:\\", (bytes[0] as char).to_ascii_uppercase())
+    } else {
+        String::new()
+    }
 }
 
 enum PaneAction {
     EnterDir(String),
     GoParent,
+    JumpToPath(String),
 }
 
 fn render_file_list(
@@ -1507,10 +1559,12 @@ fn navigate_local_pane(pane: &mut PaneState, action: PaneAction, status: &mut St
             .parent()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| pane.path.clone()),
+        PaneAction::JumpToPath(p) => p,
     };
     match fs::list_local(&PathBuf::from(&new_path)) {
         Ok(entries) => {
             pane.path = new_path;
+            pane.path_input = pane.path.clone();
             pane.entries = entries;
             pane.selected.clear();
         }
@@ -1559,10 +1613,12 @@ fn navigate_remote_pane(
                 Some(i) => p[..i].to_string(),
             }
         }
+        PaneAction::JumpToPath(p) => p,
     };
     match runtime.block_on(fs::list_remote(sftp, &new_path)) {
         Ok(entries) => {
             pane.path = new_path;
+            pane.path_input = pane.path.clone();
             pane.entries = entries;
             pane.selected.clear();
         }

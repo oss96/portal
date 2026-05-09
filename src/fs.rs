@@ -20,6 +20,30 @@ impl FileEntry {
     }
 }
 
+/// List the available drive roots on the host system.
+/// On Windows, returns a list like ["C:\\", "D:\\", ...] from `GetLogicalDrives`.
+/// On other platforms, returns ["/"].
+#[cfg(windows)]
+pub fn list_drives() -> Vec<String> {
+    unsafe extern "system" {
+        fn GetLogicalDrives() -> u32;
+    }
+    let mask = unsafe { GetLogicalDrives() };
+    let mut drives = Vec::new();
+    for i in 0..26u32 {
+        if mask & (1 << i) != 0 {
+            let letter = (b'A' + i as u8) as char;
+            drives.push(format!("{}:\\", letter));
+        }
+    }
+    drives
+}
+
+#[cfg(not(windows))]
+pub fn list_drives() -> Vec<String> {
+    vec!["/".to_string()]
+}
+
 /// List files in a local directory.
 pub fn list_local(dir: &Path) -> Result<Vec<FileEntry>> {
     let mut entries = vec![FileEntry::parent()];
