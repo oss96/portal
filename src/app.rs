@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use transfer::TransferProgress;
+use transfer::{TaskStatus, TransferDirection, TransferRegistry, TransferTask};
 
 // ── Persistent Config ──────────────────────────────────────────────────
 
@@ -72,10 +72,16 @@ struct AppSettings {
     default_host_path: String,
     #[serde(default)]
     auto_connect: bool,
+    #[serde(default = "default_max_parallel")]
+    max_parallel_transfers: usize,
 }
 
 fn default_host_path() -> String {
     "/".to_string()
+}
+
+fn default_max_parallel() -> usize {
+    4
 }
 
 impl Default for AppSettings {
@@ -88,6 +94,7 @@ impl Default for AppSettings {
             default_remote_path: "/".to_string(),
             default_host_path: "/".to_string(),
             auto_connect: false,
+            max_parallel_transfers: default_max_parallel(),
         }
     }
 }
@@ -135,9 +142,8 @@ enum DeleteTarget {
 enum TransferState {
     Idle,
     InProgress {
-        progress: Arc<Mutex<TransferProgress>>,
+        registry: Arc<Mutex<TransferRegistry>>,
         handle: tokio::task::JoinHandle<Result<usize, String>>,
-        cancel: Arc<AtomicBool>,
     },
     Done {
         message: String,
@@ -212,12 +218,15 @@ impl ConnectState {
 // ── Browser View State ─────────────────────────────────────────────────
 
 struct BrowserState {
-    handle: client::Handle<ssh::Handler>,
+    handle: Arc<client::Handle<ssh::Handler>>,
     sftp: Arc<SftpSession>,
     local: PaneState,
     remote: PaneState,
     host: PaneState,
     show_host: bool,
+    show_transfers: bool,
+    active_pane: PaneId,
+    request_search_focus: bool,
     status: String,
     connection_label: String,
     transfer_state: TransferState,
@@ -234,6 +243,7 @@ struct PaneState {
     entries: Vec<fs::FileEntry>,
     selected: HashSet<usize>,
     last_clicked: Option<usize>,
+    search_query: String,
 }
 
 // ── Construction ───────────────────────────────────────────────────────
@@ -249,6 +259,7 @@ impl PortalApp {
         save_session(host, user, 22);
         let settings = load_settings();
         let sftp = Arc::new(sftp);
+        let handle = Arc::new(handle);
 
         let local_path = settings.default_local_path.clone();
         let local_entries = fs::list_local(&PathBuf::from(&local_path)).unwrap_or_default();
@@ -273,6 +284,7 @@ impl PortalApp {
                     entries: local_entries,
                     selected: HashSet::new(),
                     last_clicked: None,
+                    search_query: String::new(),
                 },
                 remote: PaneState {
                     path_input: remote_path.clone(),
@@ -280,6 +292,7 @@ impl PortalApp {
                     entries: remote_entries,
                     selected: HashSet::new(),
                     last_clicked: None,
+                    search_query: String::new(),
                 },
                 host: PaneState {
                     path_input: host_path.clone(),
@@ -287,8 +300,12 @@ impl PortalApp {
                     entries: host_entries,
                     selected: HashSet::new(),
                     last_clicked: None,
+                    search_query: String::new(),
                 },
                 show_host: false,
+                show_transfers: false,
+                active_pane: PaneId::Local,
+                request_search_focus: false,
                 status: "Ready".to_string(),
                 connection_label: format!("{}@{}", user, host),
                 transfer_state: TransferState::Idle,
@@ -381,23 +398,29 @@ fn poll_transfer(state: &mut BrowserState, runtime: &tokio::runtime::Runtime) {
     let current = std::mem::replace(&mut state.transfer_state, TransferState::Idle);
 
     match current {
-        TransferState::InProgress { handle, progress, cancel } => {
+        TransferState::InProgress { handle, registry } => {
             if handle.is_finished() {
                 let result = runtime.block_on(handle);
+
+                // Compute aggregate stats from the registry for the summary message.
+                let (bytes_done, elapsed) = {
+                    let r = registry.lock().unwrap();
+                    let bytes: u64 = r.tasks.iter().map(|t| t.bytes_done).sum();
+                    let elapsed = r
+                        .batch_started_at
+                        .map(|t| t.elapsed().as_secs_f64())
+                        .unwrap_or(0.0);
+                    (bytes, elapsed)
+                };
+
                 match result {
                     Ok(Ok(count)) => {
-                        let p = progress.lock().unwrap();
-                        let elapsed = p
-                            .started_at
-                            .map(|t| t.elapsed().as_secs_f64())
-                            .unwrap_or(0.0);
                         let speed = if elapsed > 0.01 {
-                            format_size((p.bytes_done as f64 / elapsed) as u64)
+                            format_size((bytes_done as f64 / elapsed) as u64)
                         } else {
                             "---".to_string()
                         };
-                        let total_str = format_size(p.bytes_done);
-                        drop(p);
+                        let total_str = format_size(bytes_done);
 
                         if let Ok(entries) = fs::list_local(&PathBuf::from(&state.local.path)) {
                             state.local.entries = entries;
@@ -426,6 +449,20 @@ fn poll_transfer(state: &mut BrowserState, runtime: &tokio::runtime::Runtime) {
                         };
                     }
                     Ok(Err(e)) => {
+                        // Refresh listings even on partial errors
+                        if let Ok(entries) = fs::list_local(&PathBuf::from(&state.local.path)) {
+                            state.local.entries = entries;
+                        }
+                        if let Ok(entries) =
+                            runtime.block_on(fs::list_remote(&state.sftp, &state.remote.path))
+                        {
+                            state.remote.entries = entries;
+                        }
+                        if state.show_host {
+                            if let Ok(entries) = runtime.block_on(fs::list_remote(&state.sftp, &state.host.path)) {
+                                state.host.entries = entries;
+                            }
+                        }
                         state.transfer_state = TransferState::Done {
                             message: format!("Error: {}", e),
                             is_error: true,
@@ -446,7 +483,7 @@ fn poll_transfer(state: &mut BrowserState, runtime: &tokio::runtime::Runtime) {
                     }
                 }
             } else {
-                state.transfer_state = TransferState::InProgress { handle, progress, cancel };
+                state.transfer_state = TransferState::InProgress { handle, registry };
             }
         }
         TransferState::Done {
@@ -567,6 +604,7 @@ fn show_connect_view(
                     Ok((handle, sftp)) => {
                         save_session(&state.host, &state.user, port);
                         let sftp = Arc::new(sftp);
+                        let handle = Arc::new(handle);
 
                         let local_path = settings.default_local_path.clone();
                         let local_entries =
@@ -590,6 +628,7 @@ fn show_connect_view(
                                 entries: local_entries,
                                 selected: HashSet::new(),
                     last_clicked: None,
+                    search_query: String::new(),
                             },
                             remote: PaneState {
                                 path_input: remote_path.clone(),
@@ -597,6 +636,7 @@ fn show_connect_view(
                                 entries: remote_entries,
                                 selected: HashSet::new(),
                     last_clicked: None,
+                    search_query: String::new(),
                             },
                             host: PaneState {
                                 path_input: host_path.clone(),
@@ -604,8 +644,12 @@ fn show_connect_view(
                                 entries: host_entries,
                                 selected: HashSet::new(),
                     last_clicked: None,
+                    search_query: String::new(),
                             },
                             show_host: false,
+                            show_transfers: false,
+                            active_pane: PaneId::Local,
+                            request_search_focus: false,
                             status: "Connected".to_string(),
                             connection_label: format!("{}@{}", state.user, state.host),
                             transfer_state: TransferState::Idle,
@@ -647,6 +691,11 @@ fn show_browser_view(
     let is_transferring = matches!(state.transfer_state, TransferState::InProgress { .. });
     if is_transferring {
         ctx.request_repaint();
+    }
+
+    // Ctrl+F: focus the active pane's filter input
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::F)) {
+        state.request_search_focus = true;
     }
 
     // Settings window (floating)
@@ -788,7 +837,7 @@ fn show_browser_view(
                         let src = src_pane.path.clone();
                         let dst = dst_pane.path.clone();
                         match runtime.block_on(fs::copy_remote(
-                            &state.handle, &src, &entries, &dst,
+                            &*state.handle, &src, &entries, &dst,
                         )) {
                             Ok(n) => state.status = format!("Copied {} item(s)", n),
                             Err(e) => state.status = format!("Copy error: {}", e),
@@ -815,7 +864,7 @@ fn show_browser_view(
                         let src = src_pane.path.clone();
                         let dst = dst_pane.path.clone();
                         match runtime.block_on(fs::move_remote(
-                            &state.handle, &src, &entries, &dst,
+                            &*state.handle, &src, &entries, &dst,
                         )) {
                             Ok(n) => state.status = format!("Moved {} item(s)", n),
                             Err(e) => state.status = format!("Move error: {}", e),
@@ -830,10 +879,12 @@ fn show_browser_view(
                         .button(egui::RichText::new("\u{2716} Cancel").color(egui::Color32::RED))
                         .clicked()
                     {
-                        if let TransferState::InProgress { cancel, handle, .. } =
+                        if let TransferState::InProgress { registry, handle } =
                             &state.transfer_state
                         {
-                            cancel.store(true, Ordering::Relaxed);
+                            let r = registry.lock().unwrap();
+                            r.global_cancel.store(true, Ordering::Relaxed);
+                            drop(r);
                             handle.abort(); // immediately kill the task
                         }
                     }
@@ -846,16 +897,40 @@ fn show_browser_view(
                     TransferState::Idle => {
                         ui.label(&state.status);
                     }
-                    TransferState::InProgress { progress, .. } => {
-                        let p = progress.lock().unwrap().clone();
+                    TransferState::InProgress { registry, .. } => {
+                        let (total, done, active, bytes_done, bytes_total, elapsed) = {
+                            let r = registry.lock().unwrap();
+                            let total = r.tasks.len();
+                            let done = r
+                                .tasks
+                                .iter()
+                                .filter(|t| {
+                                    matches!(
+                                        t.status,
+                                        TaskStatus::Done
+                                            | TaskStatus::Error
+                                            | TaskStatus::Cancelled
+                                    )
+                                })
+                                .count();
+                            let active = r
+                                .tasks
+                                .iter()
+                                .filter(|t| t.status == TaskStatus::Active)
+                                .count();
+                            let bd: u64 = r.tasks.iter().map(|t| t.bytes_done).sum();
+                            let bt: u64 = r.tasks.iter().map(|t| t.bytes_total).sum();
+                            let elapsed = r
+                                .batch_started_at
+                                .map(|t| t.elapsed().as_secs_f64())
+                                .unwrap_or(0.0);
+                            (total, done, active, bd, bt, elapsed)
+                        };
 
                         ui.spinner();
 
-                        // Progress bar: use bytes when known, else file count
-                        let fraction = if p.bytes_total > 0 {
-                            p.bytes_done as f32 / p.bytes_total as f32
-                        } else if p.files_total > 0 {
-                            p.files_done as f32 / p.files_total as f32
+                        let fraction = if bytes_total > 0 {
+                            bytes_done as f32 / bytes_total as f32
                         } else {
                             0.0
                         };
@@ -865,24 +940,19 @@ fn show_browser_view(
                                 .show_percentage(),
                         );
 
-                        // Speed
-                        let elapsed = p
-                            .started_at
-                            .map(|t| t.elapsed().as_secs_f64())
-                            .unwrap_or(0.0);
-                        let speed_str = if elapsed > 0.5 && p.bytes_done > 0 {
-                            let bps = p.bytes_done as f64 / elapsed;
+                        let speed_str = if elapsed > 0.5 && bytes_done > 0 {
+                            let bps = bytes_done as f64 / elapsed;
                             format!("{}/s", format_size(bps as u64))
                         } else {
                             "...".to_string()
                         };
 
                         let text = format!(
-                            "[{}/{}] {}  {} - {}",
-                            p.files_done,
-                            p.files_total,
-                            p.current_file,
-                            format_size(p.bytes_done),
+                            "[{}/{}] {} active  {} - {}",
+                            done,
+                            total,
+                            active,
+                            format_size(bytes_done),
                             speed_str,
                         );
                         ui.label(egui::RichText::new(text).color(egui::Color32::YELLOW));
@@ -912,9 +982,22 @@ fn show_browser_view(
                     if ui.button(host_label).clicked() {
                         state.show_host = !state.show_host;
                     }
+                    let transfers_label = if state.show_transfers {
+                        "\u{2B0B} Transfers \u{25C0}"
+                    } else {
+                        "\u{2B0B} Transfers"
+                    };
+                    if ui.button(transfers_label).clicked() {
+                        state.show_transfers = !state.show_transfers;
+                    }
                 });
             });
         });
+
+    // Right panel: transfers sidebar (toggleable)
+    if state.show_transfers {
+        show_transfers_panel(ctx, state);
+    }
 
     // Left panel: local files
     let local_width = if state.show_host {
@@ -926,8 +1009,21 @@ fn show_browser_view(
         .default_width(local_width)
         .resizable(true)
         .show(ctx, |ui| {
-            let header_action = render_pane_header(ui, "Local", &mut state.local, true);
-            let list_action = render_file_list(ui, &mut state.local, PaneId::Local);
+            let header_action = render_pane_header(
+                ui,
+                "Local",
+                &mut state.local,
+                true,
+                PaneId::Local,
+                state.active_pane,
+                &mut state.request_search_focus,
+            );
+            let list_action = render_file_list(
+                ui,
+                &mut state.local,
+                PaneId::Local,
+                &mut state.active_pane,
+            );
             header_action.or(list_action)
         });
 
@@ -950,8 +1046,21 @@ fn show_browser_view(
             .default_width(ctx.screen_rect().width() / 3.0 - 10.0)
             .resizable(true)
             .show(ctx, |ui| {
-                let header_action = render_pane_header(ui, "Host", &mut state.host, false);
-                let list_action = render_file_list(ui, &mut state.host, PaneId::Host);
+                let header_action = render_pane_header(
+                    ui,
+                    "Host",
+                    &mut state.host,
+                    false,
+                    PaneId::Host,
+                    state.active_pane,
+                    &mut state.request_search_focus,
+                );
+                let list_action = render_file_list(
+                    ui,
+                    &mut state.host,
+                    PaneId::Host,
+                    &mut state.active_pane,
+                );
                 header_action.or(list_action)
             });
 
@@ -966,7 +1075,7 @@ fn show_browser_view(
                     let src = payload.src_path.clone();
                     let dst = state.host.path.clone();
                     match runtime.block_on(fs::copy_remote(
-                        &state.handle, &src, &payload.entries, &dst,
+                        &*state.handle, &src, &payload.entries, &dst,
                     )) {
                         Ok(n) => state.status = format!("Copied {} item(s)", n),
                         Err(e) => state.status = format!("Copy error: {}", e),
@@ -984,8 +1093,21 @@ fn show_browser_view(
 
     // Central panel: remote files
     let remote_response = egui::CentralPanel::default().show(ctx, |ui| {
-        let header_action = render_pane_header(ui, "Remote", &mut state.remote, false);
-        let list_action = render_file_list(ui, &mut state.remote, PaneId::Remote);
+        let header_action = render_pane_header(
+            ui,
+            "Remote",
+            &mut state.remote,
+            false,
+            PaneId::Remote,
+            state.active_pane,
+            &mut state.request_search_focus,
+        );
+        let list_action = render_file_list(
+            ui,
+            &mut state.remote,
+            PaneId::Remote,
+            &mut state.active_pane,
+        );
         header_action.or(list_action)
     });
 
@@ -997,6 +1119,229 @@ fn show_browser_view(
     if let Some(action) = remote_response.inner {
         handle_remote_action(state, runtime, action);
     }
+}
+
+// ── Transfers Sidebar ──────────────────────────────────────────────────
+
+fn show_transfers_panel(ctx: &egui::Context, state: &mut BrowserState) {
+    egui::SidePanel::right("transfers_panel")
+        .default_width(300.0)
+        .min_width(280.0)
+        .resizable(true)
+        .show(ctx, |ui| {
+            // Snapshot tasks under the lock for rendering and collect actions to apply after.
+            let tasks_snapshot: Vec<TransferTask>;
+            let active_count: usize;
+            let queued_count: usize;
+            match &state.transfer_state {
+                TransferState::InProgress { registry, .. } => {
+                    let r = registry.lock().unwrap();
+                    tasks_snapshot = r.tasks.clone();
+                    active_count = r
+                        .tasks
+                        .iter()
+                        .filter(|t| t.status == TaskStatus::Active)
+                        .count();
+                    queued_count = r
+                        .tasks
+                        .iter()
+                        .filter(|t| t.status == TaskStatus::Queued)
+                        .count();
+                }
+                _ => {
+                    tasks_snapshot = Vec::new();
+                    active_count = 0;
+                    queued_count = 0;
+                }
+            };
+
+            ui.horizontal(|ui| {
+                ui.strong(format!(
+                    "Transfers ({} active, {} queued)",
+                    active_count, queued_count
+                ));
+            });
+            ui.separator();
+
+            // Header buttons
+            let mut clear_completed = false;
+            let mut cancel_all = false;
+            let mut per_task_cancel: Vec<u64> = Vec::new();
+
+            ui.horizontal(|ui| {
+                if ui.button("Clear completed").clicked() {
+                    clear_completed = true;
+                }
+                if ui.button("Cancel all").clicked() {
+                    cancel_all = true;
+                }
+            });
+            ui.separator();
+
+            if tasks_snapshot.is_empty() {
+                ui.add_space(8.0);
+                ui.weak("No active transfers.");
+            } else {
+                let active: Vec<&TransferTask> = tasks_snapshot
+                    .iter()
+                    .filter(|t| t.status == TaskStatus::Active)
+                    .collect();
+                let queued: Vec<&TransferTask> = tasks_snapshot
+                    .iter()
+                    .filter(|t| t.status == TaskStatus::Queued)
+                    .collect();
+                let completed: Vec<&TransferTask> = tasks_snapshot
+                    .iter()
+                    .filter(|t| {
+                        matches!(
+                            t.status,
+                            TaskStatus::Done | TaskStatus::Error | TaskStatus::Cancelled
+                        )
+                    })
+                    .collect();
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    if !active.is_empty() {
+                        egui::CollapsingHeader::new(format!("Active ({})", active.len()))
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                for t in &active {
+                                    if render_transfer_row(ui, t) {
+                                        per_task_cancel.push(t.id);
+                                    }
+                                }
+                            });
+                    }
+                    if !queued.is_empty() {
+                        egui::CollapsingHeader::new(format!("Queued ({})", queued.len()))
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                for t in &queued {
+                                    if render_transfer_row(ui, t) {
+                                        per_task_cancel.push(t.id);
+                                    }
+                                }
+                            });
+                    }
+                    if !completed.is_empty() {
+                        egui::CollapsingHeader::new(format!("Completed ({})", completed.len()))
+                            .default_open(false)
+                            .show(ui, |ui| {
+                                for t in &completed {
+                                    render_transfer_row(ui, t);
+                                }
+                            });
+                    }
+                });
+            }
+
+            // Apply buffered actions
+            if let TransferState::InProgress { registry, .. } = &state.transfer_state {
+                let mut r = registry.lock().unwrap();
+                if cancel_all {
+                    r.global_cancel.store(true, Ordering::Relaxed);
+                }
+                for id in &per_task_cancel {
+                    if let Some(t) = r.task_mut(*id) {
+                        t.cancel.store(true, Ordering::Relaxed);
+                    }
+                }
+                if clear_completed {
+                    r.tasks.retain(|t| {
+                        matches!(t.status, TaskStatus::Active | TaskStatus::Queued)
+                    });
+                }
+            }
+        });
+}
+
+/// Render a single transfer row. Returns true if the per-task cancel button was clicked.
+fn render_transfer_row(ui: &mut egui::Ui, task: &TransferTask) -> bool {
+    let mut cancel_clicked = false;
+
+    let direction_icon = match task.direction {
+        TransferDirection::Download => "\u{2193}", // ↓
+        TransferDirection::Upload => "\u{2191}",   // ↑
+    };
+
+    let (status_text, status_color) = match task.status {
+        TaskStatus::Active => ("Active", egui::Color32::from_rgb(100, 180, 255)),
+        TaskStatus::Queued => ("Queued", egui::Color32::GRAY),
+        TaskStatus::Done => ("Done", egui::Color32::GREEN),
+        TaskStatus::Error => ("Error", egui::Color32::RED),
+        TaskStatus::Cancelled => ("Cancelled", egui::Color32::YELLOW),
+    };
+
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(direction_icon);
+            ui.label(
+                egui::RichText::new(&task.name)
+                    .strong()
+                    .color(ui.visuals().text_color()),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if matches!(task.status, TaskStatus::Queued | TaskStatus::Active) {
+                    if ui.small_button("\u{2715}").on_hover_text("Cancel").clicked() {
+                        cancel_clicked = true;
+                    }
+                }
+                ui.label(egui::RichText::new(status_text).color(status_color));
+            });
+        });
+
+        // Subfile (the inner SCP filename for folder transfers)
+        if let Some(sub) = &task.subfile {
+            if task.status == TaskStatus::Active {
+                ui.weak(format!("  \u{2937} {}", sub));
+            }
+        }
+
+        // Progress bar + bytes/speed
+        if task.bytes_total > 0 {
+            let fraction = (task.bytes_done as f32 / task.bytes_total as f32).clamp(0.0, 1.0);
+            ui.add(
+                egui::ProgressBar::new(fraction)
+                    .desired_width(f32::INFINITY)
+                    .show_percentage(),
+            );
+        } else if task.status == TaskStatus::Active {
+            ui.weak("Calculating\u{2026}");
+        }
+
+        ui.horizontal(|ui| {
+            let bytes_str = if task.bytes_total > 0 {
+                format!(
+                    "{} / {}",
+                    format_size(task.bytes_done),
+                    format_size(task.bytes_total)
+                )
+            } else {
+                format_size(task.bytes_done)
+            };
+            ui.weak(bytes_str);
+
+            // Per-task speed
+            let elapsed = match (task.started_at, task.finished_at) {
+                (Some(s), Some(f)) => f.duration_since(s).as_secs_f64(),
+                (Some(s), None) => s.elapsed().as_secs_f64(),
+                _ => 0.0,
+            };
+            if elapsed > 0.5 && task.bytes_done > 0 {
+                let bps = task.bytes_done as f64 / elapsed;
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.weak(format!("{}/s", format_size(bps as u64)));
+                });
+            }
+        });
+
+        // Error message, if any
+        if let Some(err) = &task.error {
+            ui.colored_label(egui::Color32::RED, format!("  {}", err));
+        }
+    });
+
+    cancel_clicked
 }
 
 // ── Settings Window ────────────────────────────────────────────────────
@@ -1034,6 +1379,17 @@ fn show_settings_window(ctx: &egui::Context, state: &mut BrowserState) {
                     ui.add(
                         egui::TextEdit::singleline(&mut state.settings_draft.default_host_path)
                             .desired_width(280.0),
+                    );
+                    ui.end_row();
+
+                    ui.label("Max parallel transfers:");
+                    ui.add(
+                        egui::DragValue::new(&mut state.settings_draft.max_parallel_transfers)
+                            .range(1..=16)
+                            .speed(0.1),
+                    )
+                    .on_hover_text(
+                        "Most SSH servers cap concurrent sessions at 10 (OpenSSH MaxSessions default).",
                     );
                     ui.end_row();
 
@@ -1303,7 +1659,7 @@ fn show_merge_dialog(
             match runtime.block_on(state.sftp.create_dir(&new_dir)) {
                 Ok(()) => {
                     match runtime.block_on(fs::merge_folders_remote(
-                        &state.handle,
+                        &*state.handle,
                         &base_path,
                         &folders,
                         &new_dir,
@@ -1344,11 +1700,46 @@ fn show_merge_dialog(
 
 // ── Pane Rendering ─────────────────────────────────────────────────────
 
+fn render_search_input(
+    ui: &mut egui::Ui,
+    pane: &mut PaneState,
+    pane_id: PaneId,
+    active_pane: PaneId,
+    request_focus: &mut bool,
+) {
+    let response = ui.add(
+        egui::TextEdit::singleline(&mut pane.search_query)
+            .hint_text("Filter\u{2026}")
+            .desired_width(140.0),
+    );
+    if *request_focus && pane_id == active_pane {
+        response.request_focus();
+        *request_focus = false;
+    }
+    if !pane.search_query.is_empty() && ui.small_button("\u{2715}").clicked() {
+        pane.search_query.clear();
+    }
+    if !pane.search_query.is_empty() {
+        let q = pane.search_query.to_lowercase();
+        let hidden = pane
+            .entries
+            .iter()
+            .filter(|e| e.name != ".." && !e.name.to_lowercase().contains(&q))
+            .count();
+        if hidden > 0 {
+            ui.weak(format!("({} hidden)", hidden));
+        }
+    }
+}
+
 fn render_pane_header(
     ui: &mut egui::Ui,
     title: &str,
     pane: &mut PaneState,
     show_drives: bool,
+    pane_id: PaneId,
+    active_pane: PaneId,
+    request_focus: &mut bool,
 ) -> Option<PaneAction> {
     let mut action: Option<PaneAction> = None;
     ui.horizontal(|ui| {
@@ -1374,12 +1765,15 @@ fn render_pane_header(
                 });
         }
 
-        let response = ui.add(
-            egui::TextEdit::singleline(&mut pane.path_input).desired_width(f32::INFINITY),
-        );
-        if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-            action = Some(PaneAction::JumpToPath(pane.path_input.clone()));
-        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            render_search_input(ui, pane, pane_id, active_pane, request_focus);
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut pane.path_input).desired_width(f32::INFINITY),
+            );
+            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                action = Some(PaneAction::JumpToPath(pane.path_input.clone()));
+            }
+        });
     });
     ui.separator();
     action
@@ -1404,13 +1798,26 @@ fn render_file_list(
     ui: &mut egui::Ui,
     pane: &mut PaneState,
     pane_id: PaneId,
+    active_pane: &mut PaneId,
 ) -> Option<PaneAction> {
     let mut action: Option<PaneAction> = None;
+
+    let q = pane.search_query.to_lowercase();
+    let mut visible_count = 0usize;
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.style_mut().spacing.item_spacing.y = 1.0;
 
         for (i, entry) in pane.entries.iter().enumerate() {
+            if !q.is_empty() {
+                if entry.name == ".." {
+                    continue;
+                }
+                if !entry.name.to_lowercase().contains(&q) {
+                    continue;
+                }
+            }
+            visible_count += 1;
             let is_parent = i == 0 && entry.name == "..";
             let is_selected = pane.selected.contains(&i);
 
@@ -1505,6 +1912,10 @@ fn render_file_list(
                 response
             };
 
+            if row_response.clicked() || row_response.double_clicked() {
+                *active_pane = pane_id;
+            }
+
             if entry.is_dir && row_response.double_clicked() {
                 action = Some(if is_parent {
                     PaneAction::GoParent
@@ -1521,8 +1932,15 @@ fn render_file_list(
                     if !modifiers.ctrl && !modifiers.command {
                         pane.selected.clear();
                     }
+                    let q = pane.search_query.to_lowercase();
                     for idx in lo..=hi {
-                        if idx != 0 || pane.entries.first().is_none_or(|e| e.name != "..") {
+                        if let Some(e) = pane.entries.get(idx) {
+                            if e.name == ".." {
+                                continue;
+                            }
+                            if !q.is_empty() && !e.name.to_lowercase().contains(&q) {
+                                continue;
+                            }
                             pane.selected.insert(idx);
                         }
                     }
@@ -1541,6 +1959,10 @@ fn render_file_list(
                     pane.last_clicked = Some(i);
                 }
             }
+        }
+
+        if !q.is_empty() && visible_count == 0 {
+            ui.weak("No matches");
         }
     });
 
@@ -1567,6 +1989,7 @@ fn navigate_local_pane(pane: &mut PaneState, action: PaneAction, status: &mut St
             pane.path_input = pane.path.clone();
             pane.entries = entries;
             pane.selected.clear();
+            pane.search_query.clear();
         }
         Err(e) => *status = format!("Error: {}", e),
     }
@@ -1621,6 +2044,7 @@ fn navigate_remote_pane(
             pane.path_input = pane.path.clone();
             pane.entries = entries;
             pane.selected.clear();
+            pane.search_query.clear();
         }
         Err(e) => *status = format!("Error: {}", e),
     }
@@ -1676,7 +2100,6 @@ fn start_copy_entries(
 
     let sftp = Arc::clone(&state.sftp);
     let items = entries.to_vec();
-    let total = items.len();
     let src = src_path.to_string();
     let dst = if upload {
         state.remote.path.clone()
@@ -1684,108 +2107,213 @@ fn start_copy_entries(
         state.local.path.clone()
     };
 
-    let progress = Arc::new(Mutex::new(TransferProgress {
-        current_file: "Calculating size...".to_string(),
-        files_done: 0,
-        files_total: total,
-        bytes_done: 0,
-        bytes_total: 0,
-        started_at: Some(std::time::Instant::now()),
-    }));
+    let max_par = state.settings_draft.max_parallel_transfers.max(1);
 
-    let cancel = Arc::new(AtomicBool::new(false));
-
-    // Open SCP channels on the main thread (one per item)
-    // Each channel gets exec'd with the appropriate scp command
-    let mut channels = Vec::new();
-    for entry in &items {
-        let channel_result = if upload {
-            let remote_target = format!("{}/{}", dst.trim_end_matches('/'), entry.name);
-            // For upload: scp -r -t <remote_dir>
-            let cmd = if entry.is_dir {
-                format!("scp -r -t {}", shell_escape(&dst))
-            } else {
-                format!("scp -t {}", shell_escape(&remote_target))
-            };
-            runtime.block_on(open_scp_channel(&state.handle, &cmd))
-        } else {
-            let remote_path = format!("{}/{}", src.trim_end_matches('/'), entry.name);
-            let cmd = if entry.is_dir {
-                format!("scp -r -f {}", shell_escape(&remote_path))
-            } else {
-                format!("scp -f {}", shell_escape(&remote_path))
-            };
-            runtime.block_on(open_scp_channel(&state.handle, &cmd))
-        };
-
-        match channel_result {
-            Ok(stream) => channels.push(stream),
-            Err(e) => {
-                state.status = format!("Failed to open SCP channel: {}", e);
-                return;
-            }
+    // Build the registry with one task per item
+    let registry: Arc<Mutex<TransferRegistry>> = Arc::new(Mutex::new(TransferRegistry::new()));
+    {
+        let mut r = registry.lock().unwrap();
+        for (idx, entry) in items.iter().enumerate() {
+            r.tasks.push(TransferTask {
+                id: (idx as u64) + 1,
+                name: entry.name.clone(),
+                direction: if upload {
+                    TransferDirection::Upload
+                } else {
+                    TransferDirection::Download
+                },
+                status: TaskStatus::Queued,
+                bytes_done: 0,
+                bytes_total: 0,
+                started_at: None,
+                finished_at: None,
+                error: None,
+                cancel: Arc::new(AtomicBool::new(false)),
+                subfile: None,
+            });
         }
     }
 
-    let progress_clone = Arc::clone(&progress);
-    let cancel_clone = Arc::clone(&cancel);
+    let registry_for_task = Arc::clone(&registry);
+    let handle_clone = Arc::clone(&state.handle);
+    let sftp_clone = sftp;
+    let src_clone = src;
+    let dst_clone = dst;
+    let items_clone = items;
 
-    let handle = runtime.spawn(async move {
-        // Compute total bytes for progress bar
-        let mut total_bytes = 0u64;
-        for entry in &items {
-            if cancel_clone.load(Ordering::Relaxed) {
-                return Err("Cancelled".to_string());
-            }
-            if upload {
-                let local_path = PathBuf::from(&src).join(&entry.name);
-                total_bytes += transfer::local_total_bytes(&local_path);
-            } else {
-                total_bytes +=
-                    transfer::remote_total_bytes(&sftp, &format!("{}/{}", src.trim_end_matches('/'), entry.name), entry.is_dir).await;
-            }
-        }
-        {
-            let mut p = progress_clone.lock().unwrap();
-            p.bytes_total = total_bytes;
-            p.current_file = String::new();
-            p.started_at = Some(std::time::Instant::now());
-        }
-
-        let mut total_files = 0usize;
-
-        for (entry, mut stream) in items.iter().zip(channels) {
-            if cancel_clone.load(Ordering::Relaxed) {
-                return Err("Cancelled".to_string());
-            }
-
+    let outer = runtime.spawn(async move {
+        // Pre-walk total bytes per task
+        for (idx, entry) in items_clone.iter().enumerate() {
+            let id = (idx as u64) + 1;
+            if registry_for_task
+                .lock()
+                .unwrap()
+                .global_cancel
+                .load(Ordering::Relaxed)
             {
-                let mut p = progress_clone.lock().unwrap();
-                p.current_file = entry.name.clone();
+                return Err("Cancelled".to_string());
             }
-
-            let result = if upload {
-                let local_path = PathBuf::from(&src).join(&entry.name);
-                transfer::scp_upload(&mut stream, &local_path, &progress_clone, &cancel_clone).await
+            let total = if upload {
+                let local_path = PathBuf::from(&src_clone).join(&entry.name);
+                transfer::local_total_bytes(&local_path)
             } else {
-                let local_base = PathBuf::from(&dst);
-                transfer::scp_download(&mut stream, &local_base, &progress_clone, &cancel_clone).await
+                transfer::remote_total_bytes(
+                    &sftp_clone,
+                    &format!("{}/{}", src_clone.trim_end_matches('/'), entry.name),
+                    entry.is_dir,
+                )
+                .await
             };
+            if let Some(t) = registry_for_task.lock().unwrap().task_mut(id) {
+                t.bytes_total = total;
+            }
+        }
+        registry_for_task.lock().unwrap().batch_started_at = Some(std::time::Instant::now());
 
-            match result {
-                Ok(count) => total_files += count,
-                Err(e) => return Err(e.to_string()),
+        let mut set: tokio::task::JoinSet<Result<usize, (u64, String)>> =
+            tokio::task::JoinSet::new();
+        let mut next = 0usize;
+        let mut total_files = 0usize;
+        let mut first_err: Option<String> = None;
+
+        let global_cancel = registry_for_task.lock().unwrap().global_cancel.clone();
+
+        // Prime the worker pool
+        while next < items_clone.len() && set.len() < max_par {
+            spawn_transfer_worker(
+                &mut set,
+                next,
+                upload,
+                Arc::clone(&registry_for_task),
+                handle_clone.clone(),
+                src_clone.clone(),
+                dst_clone.clone(),
+                items_clone[next].clone(),
+            );
+            next += 1;
+        }
+
+        // Drain + top up
+        while let Some(joined) = set.join_next().await {
+            match joined {
+                Ok(Ok(n)) => total_files += n,
+                Ok(Err((_id, msg))) => {
+                    if !msg.contains("Cancelled") && first_err.is_none() {
+                        first_err = Some(msg);
+                        global_cancel.store(true, Ordering::Relaxed);
+                    }
+                }
+                Err(join_err) => {
+                    if first_err.is_none() {
+                        first_err = Some(join_err.to_string());
+                        global_cancel.store(true, Ordering::Relaxed);
+                    }
+                }
+            }
+            if first_err.is_none()
+                && !global_cancel.load(Ordering::Relaxed)
+                && next < items_clone.len()
+            {
+                spawn_transfer_worker(
+                    &mut set,
+                    next,
+                    upload,
+                    Arc::clone(&registry_for_task),
+                    handle_clone.clone(),
+                    src_clone.clone(),
+                    dst_clone.clone(),
+                    items_clone[next].clone(),
+                );
+                next += 1;
             }
         }
 
-        Ok(total_files)
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(total_files),
+        }
     });
 
     state.transfer_state = TransferState::InProgress {
-        progress,
-        handle,
-        cancel,
+        registry,
+        handle: outer,
     };
+}
+
+/// Spawn a single transfer worker into the JoinSet. Each worker opens its own
+/// SCP channel and runs scp_upload or scp_download against the registry.
+fn spawn_transfer_worker(
+    set: &mut tokio::task::JoinSet<Result<usize, (u64, String)>>,
+    idx: usize,
+    upload: bool,
+    registry: Arc<Mutex<TransferRegistry>>,
+    handle: Arc<client::Handle<ssh::Handler>>,
+    src: String,
+    dst: String,
+    entry: fs::FileEntry,
+) {
+    let id = (idx as u64) + 1;
+    set.spawn(async move {
+        // Mark Active
+        if let Some(t) = registry.lock().unwrap().task_mut(id) {
+            t.status = TaskStatus::Active;
+            t.started_at = Some(std::time::Instant::now());
+        }
+
+        let result: Result<usize, String> = async {
+            let stream_result = if upload {
+                let remote_target = format!("{}/{}", dst.trim_end_matches('/'), entry.name);
+                let cmd = if entry.is_dir {
+                    format!("scp -r -t {}", shell_escape(&dst))
+                } else {
+                    format!("scp -t {}", shell_escape(&remote_target))
+                };
+                open_scp_channel(&handle, &cmd).await
+            } else {
+                let remote_path = format!("{}/{}", src.trim_end_matches('/'), entry.name);
+                let cmd = if entry.is_dir {
+                    format!("scp -r -f {}", shell_escape(&remote_path))
+                } else {
+                    format!("scp -f {}", shell_escape(&remote_path))
+                };
+                open_scp_channel(&handle, &cmd).await
+            };
+            let mut stream = stream_result.map_err(|e| e.to_string())?;
+            if upload {
+                let local_path = PathBuf::from(&src).join(&entry.name);
+                transfer::scp_upload(&mut stream, &local_path, &registry, id)
+                    .await
+                    .map_err(|e| e.to_string())
+            } else {
+                let local_base = PathBuf::from(&dst);
+                transfer::scp_download(&mut stream, &local_base, &registry, id)
+                    .await
+                    .map_err(|e| e.to_string())
+            }
+        }
+        .await;
+
+        // Finalize task status
+        {
+            let mut reg = registry.lock().unwrap();
+            if let Some(t) = reg.task_mut(id) {
+                t.finished_at = Some(std::time::Instant::now());
+                match &result {
+                    Ok(_) => t.status = TaskStatus::Done,
+                    Err(msg) => {
+                        if msg.contains("Cancelled") {
+                            t.status = TaskStatus::Cancelled;
+                        } else {
+                            t.status = TaskStatus::Error;
+                            t.error = Some(msg.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        result.map_err(|e| (id, e))
+    });
 }
 
 async fn open_scp_channel(

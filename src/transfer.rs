@@ -3,17 +3,59 @@ use russh_sftp::client::SftpSession;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// Shared progress state updated during transfers.
-#[derive(Clone, Default)]
-pub struct TransferProgress {
-    pub current_file: String,
-    pub files_done: usize,
-    pub files_total: usize,
+// ── Per-task transfer registry ────────────────────────────────────────
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TransferDirection {
+    Upload,
+    Download,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TaskStatus {
+    Queued,
+    Active,
+    Done,
+    Error,
+    Cancelled,
+}
+
+#[derive(Clone)]
+pub struct TransferTask {
+    pub id: u64,
+    pub name: String,
+    pub direction: TransferDirection,
+    pub status: TaskStatus,
     pub bytes_done: u64,
     pub bytes_total: u64,
-    pub started_at: Option<std::time::Instant>,
+    pub started_at: Option<Instant>,
+    pub finished_at: Option<Instant>,
+    pub error: Option<String>,
+    pub cancel: Arc<AtomicBool>,
+    pub subfile: Option<String>,
+}
+
+pub struct TransferRegistry {
+    pub tasks: Vec<TransferTask>,
+    pub batch_started_at: Option<Instant>,
+    pub global_cancel: Arc<AtomicBool>,
+}
+
+impl TransferRegistry {
+    pub fn new() -> Self {
+        Self {
+            tasks: Vec::new(),
+            batch_started_at: None,
+            global_cancel: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn task_mut(&mut self, id: u64) -> Option<&mut TransferTask> {
+        self.tasks.iter_mut().find(|t| t.id == id)
+    }
 }
 
 const CHUNK_SIZE: usize = 1024 * 1024; // 1 MB
@@ -25,12 +67,26 @@ const CHUNK_SIZE: usize = 1024 * 1024; // 1 MB
 pub async fn scp_download<S>(
     stream: &mut S,
     local_base: &Path,
-    progress: &Arc<Mutex<TransferProgress>>,
-    cancel: &Arc<AtomicBool>,
+    registry: &Arc<Mutex<TransferRegistry>>,
+    task_id: u64,
 ) -> Result<usize>
 where
     S: AsyncReadExt + AsyncWriteExt + Unpin,
 {
+    // Hoist Arc<AtomicBool> clones outside the hot loop.
+    let (task_cancel, global_cancel) = {
+        let mut reg = registry.lock().unwrap();
+        let task_cancel = reg
+            .task_mut(task_id)
+            .map(|t| t.cancel.clone())
+            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+        let global_cancel = reg.global_cancel.clone();
+        (task_cancel, global_cancel)
+    };
+
+    let cancelled =
+        || task_cancel.load(Ordering::Relaxed) || global_cancel.load(Ordering::Relaxed);
+
     // Send initial ACK to start the protocol
     stream.write_all(&[0u8]).await?;
 
@@ -39,7 +95,7 @@ where
     let mut line_buf = Vec::with_capacity(512);
 
     loop {
-        if cancel.load(Ordering::Relaxed) {
+        if cancelled() {
             bail!("Cancelled");
         }
 
@@ -67,8 +123,10 @@ where
                 let current_dir = dir_stack.last().unwrap();
                 let local_path = current_dir.join(name);
 
-                if let Ok(mut p) = progress.lock() {
-                    p.current_file = name.to_string();
+                if let Ok(mut reg) = registry.lock() {
+                    if let Some(t) = reg.task_mut(task_id) {
+                        t.subfile = Some(name.to_string());
+                    }
                 }
 
                 // ACK
@@ -83,7 +141,7 @@ where
                 let mut buf = vec![0u8; CHUNK_SIZE];
 
                 while remaining > 0 {
-                    if cancel.load(Ordering::Relaxed) {
+                    if cancelled() {
                         bail!("Cancelled");
                     }
                     let to_read = (remaining as usize).min(buf.len());
@@ -94,8 +152,10 @@ where
                     file.write_all(&buf[..n]).await?;
                     remaining -= n as u64;
 
-                    if let Ok(mut p) = progress.lock() {
-                        p.bytes_done += n as u64;
+                    if let Ok(mut reg) = registry.lock() {
+                        if let Some(t) = reg.task_mut(task_id) {
+                            t.bytes_done += n as u64;
+                        }
                     }
                 }
 
@@ -105,9 +165,6 @@ where
                 stream.write_all(&[0u8]).await?;
 
                 file_count += 1;
-                if let Ok(mut p) = progress.lock() {
-                    p.files_done = file_count;
-                }
             }
             b'D' => {
                 // Directory entry: D<mode> 0 <name>\n
@@ -171,12 +228,23 @@ where
 pub async fn scp_upload<S>(
     stream: &mut S,
     local_path: &Path,
-    progress: &Arc<Mutex<TransferProgress>>,
-    cancel: &Arc<AtomicBool>,
+    registry: &Arc<Mutex<TransferRegistry>>,
+    task_id: u64,
 ) -> Result<usize>
 where
     S: AsyncReadExt + AsyncWriteExt + Unpin,
 {
+    // Hoist Arc<AtomicBool> clones outside the hot loop.
+    let (task_cancel, global_cancel) = {
+        let mut reg = registry.lock().unwrap();
+        let task_cancel = reg
+            .task_mut(task_id)
+            .map(|t| t.cancel.clone())
+            .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+        let global_cancel = reg.global_cancel.clone();
+        (task_cancel, global_cancel)
+    };
+
     // Read initial ACK from server
     let mut ack = [0u8; 1];
     stream.read_exact(&mut ack).await?;
@@ -184,7 +252,9 @@ where
         bail!("SCP server rejected transfer (initial ACK = {})", ack[0]);
     }
 
-    let count = scp_upload_recursive(stream, local_path, progress, cancel).await?;
+    let count =
+        scp_upload_recursive(stream, local_path, registry, task_id, &task_cancel, &global_cancel)
+            .await?;
 
     Ok(count)
 }
@@ -192,12 +262,17 @@ where
 async fn scp_upload_recursive<S>(
     stream: &mut S,
     local_path: &Path,
-    progress: &Arc<Mutex<TransferProgress>>,
-    cancel: &Arc<AtomicBool>,
+    registry: &Arc<Mutex<TransferRegistry>>,
+    task_id: u64,
+    task_cancel: &Arc<AtomicBool>,
+    global_cancel: &Arc<AtomicBool>,
 ) -> Result<usize>
 where
     S: AsyncReadExt + AsyncWriteExt + Unpin,
 {
+    let cancelled =
+        || task_cancel.load(Ordering::Relaxed) || global_cancel.load(Ordering::Relaxed);
+
     let mut count = 0usize;
 
     if local_path.is_dir() {
@@ -217,14 +292,16 @@ where
         entries.sort_by_key(|e| e.file_name());
 
         for entry in entries {
-            if cancel.load(Ordering::Relaxed) {
+            if cancelled() {
                 bail!("Cancelled");
             }
             count += Box::pin(scp_upload_recursive(
                 stream,
                 &entry.path(),
-                progress,
-                cancel,
+                registry,
+                task_id,
+                task_cancel,
+                global_cancel,
             ))
             .await?;
         }
@@ -240,8 +317,10 @@ where
             .unwrap_or_default()
             .to_string_lossy();
 
-        if let Ok(mut p) = progress.lock() {
-            p.current_file = name.to_string();
+        if let Ok(mut reg) = registry.lock() {
+            if let Some(t) = reg.task_mut(task_id) {
+                t.subfile = Some(name.to_string());
+            }
         }
 
         // Send C entry
@@ -255,7 +334,7 @@ where
         let mut remaining = size;
 
         while remaining > 0 {
-            if cancel.load(Ordering::Relaxed) {
+            if cancelled() {
                 bail!("Cancelled");
             }
             let to_read = (remaining as usize).min(buf.len());
@@ -266,8 +345,10 @@ where
             stream.write_all(&buf[..n]).await?;
             remaining -= n as u64;
 
-            if let Ok(mut p) = progress.lock() {
-                p.bytes_done += n as u64;
+            if let Ok(mut reg) = registry.lock() {
+                if let Some(t) = reg.task_mut(task_id) {
+                    t.bytes_done += n as u64;
+                }
             }
         }
 
@@ -276,9 +357,6 @@ where
         read_ack(stream).await?;
 
         count += 1;
-        if let Ok(mut p) = progress.lock() {
-            p.files_done = count;
-        }
     }
 
     Ok(count)
