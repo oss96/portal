@@ -1,0 +1,41 @@
+name: Build & Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Update release
+        shell: bash
+        run: |
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          git tag -f latest
+          git push -f origin latest
+          gh release create latest target/release/portal.exe \
+            --title "Latest Build" \
+            --notes "Automated build from [\`$(git rev-parse --short HEAD)\`](https://github.com/${{ github.repository }}/commit/${{ github.sha }})" \
+            --latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
