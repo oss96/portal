@@ -1300,14 +1300,10 @@ fn render_transfer_row(ui: &mut egui::Ui, task: &TransferTask) -> bool {
             }
         }
 
-        // Thin progress bar (no inline text)
+        // Thin custom progress bar with a visible track.
         if task.bytes_total > 0 {
             let fraction = (task.bytes_done as f32 / task.bytes_total as f32).clamp(0.0, 1.0);
-            ui.add(
-                egui::ProgressBar::new(fraction)
-                    .desired_width(f32::INFINITY)
-                    .desired_height(6.0),
-            );
+            draw_progress_bar(ui, fraction);
         } else if task.status == TaskStatus::Active {
             ui.weak("Calculating\u{2026}");
         }
@@ -2351,6 +2347,36 @@ fn shell_escape(s: &str) -> String {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────
+
+fn draw_progress_bar(ui: &mut egui::Ui, fraction: f32) {
+    let height = 8.0;
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::hover());
+    let visuals = ui.style().visuals.clone();
+    let corner: egui::CornerRadius = (height / 2.0).into();
+
+    // Track: visible against the dark panel background.
+    let track_color = visuals.widgets.inactive.bg_fill;
+    ui.painter().rect_filled(rect, corner, track_color);
+
+    // Fill: clamp to a minimum so a small but non-zero fraction is still visible.
+    if fraction > 0.0 {
+        let min_w = height; // at least one rounded cap wide
+        let fill_w = (rect.width() * fraction).max(min_w);
+        let fill_rect =
+            egui::Rect::from_min_size(rect.min, egui::vec2(fill_w, rect.height()));
+        ui.painter()
+            .rect_filled(fill_rect, corner, visuals.selection.bg_fill);
+    }
+
+    // Subtle outline so the bar reads as a contained widget.
+    ui.painter().rect_stroke(
+        rect,
+        corner,
+        visuals.widgets.noninteractive.bg_stroke,
+        egui::StrokeKind::Inside,
+    );
+}
 
 fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
