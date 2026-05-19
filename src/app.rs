@@ -1007,6 +1007,7 @@ fn show_browser_view(
     };
     let local_response = egui::SidePanel::left("local_panel")
         .default_width(local_width)
+        .min_width(220.0)
         .resizable(true)
         .show(ctx, |ui| {
             let header_action = render_pane_header(
@@ -1044,6 +1045,7 @@ fn show_browser_view(
     if state.show_host {
         let host_response = egui::SidePanel::right("host_panel")
             .default_width(ctx.screen_rect().width() / 3.0 - 10.0)
+            .min_width(220.0)
             .resizable(true)
             .show(ctx, |ui| {
                 let header_action = render_pane_header(
@@ -1125,8 +1127,9 @@ fn show_browser_view(
 
 fn show_transfers_panel(ctx: &egui::Context, state: &mut BrowserState) {
     egui::SidePanel::right("transfers_panel")
-        .default_width(300.0)
+        .default_width(360.0)
         .min_width(280.0)
+        .max_width(520.0)
         .resizable(true)
         .show(ctx, |ui| {
             // Snapshot tasks under the lock for rendering and collect actions to apply after.
@@ -1297,42 +1300,59 @@ fn render_transfer_row(ui: &mut egui::Ui, task: &TransferTask) -> bool {
             }
         }
 
-        // Progress bar + bytes/speed
+        // Thin progress bar (no inline text)
         if task.bytes_total > 0 {
             let fraction = (task.bytes_done as f32 / task.bytes_total as f32).clamp(0.0, 1.0);
             ui.add(
                 egui::ProgressBar::new(fraction)
                     .desired_width(f32::INFINITY)
-                    .show_percentage(),
+                    .desired_height(6.0),
             );
         } else if task.status == TaskStatus::Active {
             ui.weak("Calculating\u{2026}");
         }
 
-        ui.horizontal(|ui| {
-            let bytes_str = if task.bytes_total > 0 {
-                format!(
-                    "{} / {}",
-                    format_size(task.bytes_done),
-                    format_size(task.bytes_total)
-                )
-            } else {
-                format_size(task.bytes_done)
-            };
-            ui.weak(bytes_str);
-
-            // Per-task speed
-            let elapsed = match (task.started_at, task.finished_at) {
-                (Some(s), Some(f)) => f.duration_since(s).as_secs_f64(),
-                (Some(s), None) => s.elapsed().as_secs_f64(),
-                _ => 0.0,
-            };
+        // Info row: "bytes_done / bytes_total · pct%" on left, "rate/s" on right.
+        let info_left = if task.bytes_total > 0 {
+            let pct = (task.bytes_done as f32 / task.bytes_total as f32 * 100.0)
+                .clamp(0.0, 100.0);
+            format!(
+                "{} / {} \u{00B7} {:.0}%",
+                format_size(task.bytes_done),
+                format_size(task.bytes_total),
+                pct
+            )
+        } else {
+            format_size(task.bytes_done)
+        };
+        let elapsed = match (task.started_at, task.finished_at) {
+            (Some(s), Some(f)) => f.duration_since(s).as_secs_f64(),
+            (Some(s), None) => s.elapsed().as_secs_f64(),
+            _ => 0.0,
+        };
+        let info_right = if task.status == TaskStatus::Active {
             if elapsed > 0.5 && task.bytes_done > 0 {
                 let bps = task.bytes_done as f64 / elapsed;
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.weak(format!("{}/s", format_size(bps as u64)));
-                });
+                format!("{}/s", format_size(bps as u64))
+            } else {
+                "\u{2026}".to_string()
             }
+        } else if matches!(task.status, TaskStatus::Done)
+            && elapsed > 0.0
+            && task.bytes_done > 0
+        {
+            let bps = task.bytes_done as f64 / elapsed;
+            format!("{}/s avg", format_size(bps as u64))
+        } else {
+            String::new()
+        };
+        ui.horizontal(|ui| {
+            ui.weak(&info_left);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !info_right.is_empty() {
+                    ui.weak(&info_right);
+                }
+            });
         });
 
         // Error message, if any
