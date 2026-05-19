@@ -116,6 +116,37 @@ fn save_settings(settings: &AppSettings) {
     );
 }
 
+// ── Transfer History (persistent) ──────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone)]
+struct HistoricalTransfer {
+    id: u64,
+    name: String,
+    direction: TransferDirection,
+    status: TaskStatus,
+    bytes_done: u64,
+    bytes_total: u64,
+    duration_secs: f64,
+    error: Option<String>,
+}
+
+fn load_history() -> Vec<HistoricalTransfer> {
+    let path = config_dir().join("transfers.json");
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|d| serde_json::from_str(&d).ok())
+        .unwrap_or_default()
+}
+
+fn save_history(history: &[HistoricalTransfer]) {
+    let dir = config_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(
+        dir.join("transfers.json"),
+        serde_json::to_string_pretty(history).unwrap_or_default(),
+    );
+}
+
 // ── Drag & Drop Payload ────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq)]
@@ -235,6 +266,8 @@ struct BrowserState {
     confirm_delete: Option<(DeleteTarget, Vec<fs::FileEntry>)>,
     new_folder: Option<(PaneId, String)>,
     merge_folders: Option<(PaneId, Vec<fs::FileEntry>, String, bool)>,
+    transfer_history: Vec<HistoricalTransfer>,
+    next_history_id: u64,
 }
 
 struct PaneState {
@@ -272,6 +305,9 @@ impl PortalApp {
         let host_entries = runtime
             .block_on(fs::list_remote(&sftp, &host_path))
             .unwrap_or_default();
+
+        let history = load_history();
+        let next_history_id = history.iter().map(|x| x.id).max().unwrap_or(0) + 1;
 
         Ok(Self {
             runtime,
@@ -314,6 +350,8 @@ impl PortalApp {
                 confirm_delete: None,
                 new_folder: None,
                 merge_folders: None,
+                transfer_history: history,
+                next_history_id,
             }),
             first_frame: true,
             settings,
@@ -402,86 +440,130 @@ fn poll_transfer(state: &mut BrowserState, runtime: &tokio::runtime::Runtime) {
             if handle.is_finished() {
                 let result = runtime.block_on(handle);
 
-                // Compute aggregate stats from the registry for the summary message.
-                let (bytes_done, elapsed) = {
+                // Snapshot tasks and aggregate stats from the registry.
+                let tasks_snapshot;
+                let bytes_done;
+                let elapsed;
+                {
                     let r = registry.lock().unwrap();
-                    let bytes: u64 = r.tasks.iter().map(|t| t.bytes_done).sum();
-                    let elapsed = r
+                    tasks_snapshot = r.tasks.clone();
+                    bytes_done = r.tasks.iter().map(|t| t.bytes_done).sum::<u64>();
+                    elapsed = r
                         .batch_started_at
                         .map(|t| t.elapsed().as_secs_f64())
                         .unwrap_or(0.0);
-                    (bytes, elapsed)
-                };
+                }
 
-                match result {
-                    Ok(Ok(count)) => {
-                        let speed = if elapsed > 0.01 {
-                            format_size((bytes_done as f64 / elapsed) as u64)
-                        } else {
-                            "---".to_string()
-                        };
-                        let total_str = format_size(bytes_done);
+                // Move every task into persistent history. Tasks that were still
+                // Queued/Active when the batch ended are recorded as Cancelled.
+                let now = std::time::Instant::now();
+                for task in &tasks_snapshot {
+                    let final_status = match task.status {
+                        TaskStatus::Queued | TaskStatus::Active => TaskStatus::Cancelled,
+                        s => s,
+                    };
+                    let started = task.started_at.unwrap_or(now);
+                    let finished = task.finished_at.unwrap_or(now);
+                    let duration = finished.duration_since(started).as_secs_f64();
+                    state.transfer_history.push(HistoricalTransfer {
+                        id: state.next_history_id,
+                        name: task.name.clone(),
+                        direction: task.direction,
+                        status: final_status,
+                        bytes_done: task.bytes_done,
+                        bytes_total: task.bytes_total,
+                        duration_secs: duration,
+                        error: task.error.clone(),
+                    });
+                    state.next_history_id += 1;
+                }
+                save_history(&state.transfer_history);
 
-                        if let Ok(entries) = fs::list_local(&PathBuf::from(&state.local.path)) {
-                            state.local.entries = entries;
-                        }
-                        if let Ok(entries) =
-                            runtime.block_on(fs::list_remote(&state.sftp, &state.remote.path))
-                        {
-                            state.remote.entries = entries;
-                        }
-                        if state.show_host {
-                            if let Ok(entries) = runtime.block_on(fs::list_remote(&state.sftp, &state.host.path)) {
-                                state.host.entries = entries;
-                            }
-                        }
-                        state.local.selected.clear();
-                        state.remote.selected.clear();
-                        state.host.selected.clear();
-
-                        state.transfer_state = TransferState::Done {
-                            message: format!(
-                                "Transferred {} item(s) \u{2014} {} at {}/s",
-                                count, total_str, speed
-                            ),
-                            is_error: false,
-                            since: std::time::Instant::now(),
-                        };
-                    }
-                    Ok(Err(e)) => {
-                        // Refresh listings even on partial errors
-                        if let Ok(entries) = fs::list_local(&PathBuf::from(&state.local.path)) {
-                            state.local.entries = entries;
-                        }
-                        if let Ok(entries) =
-                            runtime.block_on(fs::list_remote(&state.sftp, &state.remote.path))
-                        {
-                            state.remote.entries = entries;
-                        }
-                        if state.show_host {
-                            if let Ok(entries) = runtime.block_on(fs::list_remote(&state.sftp, &state.host.path)) {
-                                state.host.entries = entries;
-                            }
-                        }
-                        state.transfer_state = TransferState::Done {
-                            message: format!("Error: {}", e),
-                            is_error: true,
-                            since: std::time::Instant::now(),
-                        };
-                    }
-                    Err(e) => {
-                        let (msg, is_err) = if e.is_cancelled() {
-                            ("Transfer cancelled".to_string(), false)
-                        } else {
-                            (format!("Failed: {}", e), true)
-                        };
-                        state.transfer_state = TransferState::Done {
-                            message: msg,
-                            is_error: is_err,
-                            since: std::time::Instant::now(),
-                        };
+                // Refresh listings and clear selections regardless of outcome.
+                if let Ok(entries) = fs::list_local(&PathBuf::from(&state.local.path)) {
+                    state.local.entries = entries;
+                }
+                if let Ok(entries) =
+                    runtime.block_on(fs::list_remote(&state.sftp, &state.remote.path))
+                {
+                    state.remote.entries = entries;
+                }
+                if state.show_host {
+                    if let Ok(entries) =
+                        runtime.block_on(fs::list_remote(&state.sftp, &state.host.path))
+                    {
+                        state.host.entries = entries;
                     }
                 }
+                state.local.selected.clear();
+                state.remote.selected.clear();
+                state.host.selected.clear();
+
+                // Build a summary message from actual final task statuses.
+                let done_count = tasks_snapshot
+                    .iter()
+                    .filter(|t| t.status == TaskStatus::Done)
+                    .count();
+                let cancelled_count = tasks_snapshot
+                    .iter()
+                    .filter(|t| {
+                        matches!(
+                            t.status,
+                            TaskStatus::Cancelled | TaskStatus::Queued | TaskStatus::Active
+                        )
+                    })
+                    .count();
+                let error_count = tasks_snapshot
+                    .iter()
+                    .filter(|t| t.status == TaskStatus::Error)
+                    .count();
+
+                let (message, is_error) = match result {
+                    Ok(Ok(_)) => {
+                        if done_count > 0 {
+                            let speed_str = if elapsed > 0.01 {
+                                format!("{}/s", format_size((bytes_done as f64 / elapsed) as u64))
+                            } else {
+                                "---/s".to_string()
+                            };
+                            let mut msg = format!(
+                                "Transferred {} item(s) \u{2014} {} at {}",
+                                done_count,
+                                format_size(bytes_done),
+                                speed_str
+                            );
+                            if cancelled_count > 0 {
+                                msg.push_str(&format!(" ({} cancelled)", cancelled_count));
+                            }
+                            if error_count > 0 {
+                                msg.push_str(&format!(" ({} errored)", error_count));
+                            }
+                            (msg, error_count > 0)
+                        } else if cancelled_count > 0 {
+                            (format!("Cancelled {} item(s)", cancelled_count), false)
+                        } else {
+                            ("No items transferred".to_string(), false)
+                        }
+                    }
+                    Ok(Err(e)) => (format!("Error: {}", e), true),
+                    Err(e) => {
+                        if e.is_cancelled() {
+                            if cancelled_count > 0 {
+                                (format!("Cancelled {} item(s)", cancelled_count), false)
+                            } else {
+                                ("Transfer cancelled".to_string(), false)
+                            }
+                        } else {
+                            (format!("Failed: {}", e), true)
+                        }
+                    }
+                };
+
+                state.transfer_state = TransferState::Done {
+                    message,
+                    is_error,
+                    since: std::time::Instant::now(),
+                };
             } else {
                 state.transfer_state = TransferState::InProgress { handle, registry };
             }
@@ -619,6 +701,10 @@ fn show_connect_view(
                             .block_on(fs::list_remote(&sftp, &host_path))
                             .unwrap_or_default();
 
+                        let history = load_history();
+                        let next_history_id =
+                            history.iter().map(|x| x.id).max().unwrap_or(0) + 1;
+
                         result = Some(BrowserState {
                             handle,
                             sftp,
@@ -658,6 +744,8 @@ fn show_connect_view(
                             confirm_delete: None,
                 new_folder: None,
                 merge_folders: None,
+                            transfer_history: history,
+                            next_history_id,
                         });
                     }
                     Err(e) => {
@@ -1132,14 +1220,22 @@ fn show_transfers_panel(ctx: &egui::Context, state: &mut BrowserState) {
         .max_width(520.0)
         .resizable(true)
         .show(ctx, |ui| {
-            // Snapshot tasks under the lock for rendering and collect actions to apply after.
-            let tasks_snapshot: Vec<TransferTask>;
+            // Snapshot live (active + queued) tasks from the current batch.
+            // Finalized tasks live in transfer_history (moved over at batch end).
+            let live_tasks: Vec<TransferTask>;
             let active_count: usize;
             let queued_count: usize;
             match &state.transfer_state {
                 TransferState::InProgress { registry, .. } => {
                     let r = registry.lock().unwrap();
-                    tasks_snapshot = r.tasks.clone();
+                    live_tasks = r
+                        .tasks
+                        .iter()
+                        .filter(|t| {
+                            matches!(t.status, TaskStatus::Active | TaskStatus::Queued)
+                        })
+                        .cloned()
+                        .collect();
                     active_count = r
                         .tasks
                         .iter()
@@ -1152,88 +1248,93 @@ fn show_transfers_panel(ctx: &egui::Context, state: &mut BrowserState) {
                         .count();
                 }
                 _ => {
-                    tasks_snapshot = Vec::new();
+                    live_tasks = Vec::new();
                     active_count = 0;
                     queued_count = 0;
                 }
             };
 
+            let history_count = state.transfer_history.len();
+
             ui.horizontal(|ui| {
                 ui.strong(format!(
-                    "Transfers ({} active, {} queued)",
-                    active_count, queued_count
+                    "Transfers ({} active, {} queued, {} in history)",
+                    active_count, queued_count, history_count
                 ));
             });
             ui.separator();
 
-            // Header buttons
-            let mut clear_completed = false;
+            // Header buttons + buffered actions
+            let mut clear_history = false;
             let mut cancel_all = false;
             let mut per_task_cancel: Vec<u64> = Vec::new();
+            let mut history_remove_id: Option<u64> = None;
 
             ui.horizontal(|ui| {
-                if ui.button("Clear completed").clicked() {
-                    clear_completed = true;
+                if ui
+                    .add_enabled(history_count > 0, egui::Button::new("Clear history"))
+                    .on_hover_text("Remove all completed/cancelled/errored transfers from history")
+                    .clicked()
+                {
+                    clear_history = true;
                 }
-                if ui.button("Cancel all").clicked() {
+                if ui
+                    .add_enabled(
+                        active_count + queued_count > 0,
+                        egui::Button::new("Cancel all"),
+                    )
+                    .on_hover_text("Cancel all running and queued transfers in the current batch")
+                    .clicked()
+                {
                     cancel_all = true;
                 }
             });
             ui.separator();
 
-            if tasks_snapshot.is_empty() {
+            if live_tasks.is_empty() && state.transfer_history.is_empty() {
                 ui.add_space(8.0);
-                ui.weak("No active transfers.");
+                ui.weak("No transfers.");
             } else {
-                let active: Vec<&TransferTask> = tasks_snapshot
-                    .iter()
-                    .filter(|t| t.status == TaskStatus::Active)
-                    .collect();
-                let queued: Vec<&TransferTask> = tasks_snapshot
-                    .iter()
-                    .filter(|t| t.status == TaskStatus::Queued)
-                    .collect();
-                let completed: Vec<&TransferTask> = tasks_snapshot
-                    .iter()
-                    .filter(|t| {
-                        matches!(
-                            t.status,
-                            TaskStatus::Done | TaskStatus::Error | TaskStatus::Cancelled
-                        )
-                    })
-                    .collect();
-
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    if !active.is_empty() {
-                        egui::CollapsingHeader::new(format!("Active ({})", active.len()))
-                            .default_open(true)
-                            .show(ui, |ui| {
-                                for t in &active {
-                                    if render_transfer_row(ui, t) {
-                                        per_task_cancel.push(t.id);
-                                    }
-                                }
-                            });
+                    // Current batch — active and queued first.
+                    for t in &live_tasks {
+                        let elapsed = match (t.started_at, t.finished_at) {
+                            (Some(s), Some(f)) => f.duration_since(s).as_secs_f64(),
+                            (Some(s), None) => s.elapsed().as_secs_f64(),
+                            _ => 0.0,
+                        };
+                        let row = RowView {
+                            direction: t.direction,
+                            status: t.status,
+                            name: &t.name,
+                            subfile: t.subfile.as_deref(),
+                            bytes_done: t.bytes_done,
+                            bytes_total: t.bytes_total,
+                            elapsed,
+                            error: t.error.as_deref(),
+                            show_x_button: true,
+                        };
+                        if render_transfer_row(ui, &row) {
+                            per_task_cancel.push(t.id);
+                        }
                     }
-                    if !queued.is_empty() {
-                        egui::CollapsingHeader::new(format!("Queued ({})", queued.len()))
-                            .default_open(true)
-                            .show(ui, |ui| {
-                                for t in &queued {
-                                    if render_transfer_row(ui, t) {
-                                        per_task_cancel.push(t.id);
-                                    }
-                                }
-                            });
-                    }
-                    if !completed.is_empty() {
-                        egui::CollapsingHeader::new(format!("Completed ({})", completed.len()))
-                            .default_open(false)
-                            .show(ui, |ui| {
-                                for t in &completed {
-                                    render_transfer_row(ui, t);
-                                }
-                            });
+
+                    // History — newest first.
+                    for h in state.transfer_history.iter().rev() {
+                        let row = RowView {
+                            direction: h.direction,
+                            status: h.status,
+                            name: &h.name,
+                            subfile: None,
+                            bytes_done: h.bytes_done,
+                            bytes_total: h.bytes_total,
+                            elapsed: h.duration_secs,
+                            error: h.error.as_deref(),
+                            show_x_button: true,
+                        };
+                        if render_transfer_row(ui, &row) {
+                            history_remove_id = Some(h.id);
+                        }
                     }
                 });
             }
@@ -1249,25 +1350,42 @@ fn show_transfers_panel(ctx: &egui::Context, state: &mut BrowserState) {
                         t.cancel.store(true, Ordering::Relaxed);
                     }
                 }
-                if clear_completed {
-                    r.tasks.retain(|t| {
-                        matches!(t.status, TaskStatus::Active | TaskStatus::Queued)
-                    });
-                }
+            }
+            if let Some(remove_id) = history_remove_id {
+                state.transfer_history.retain(|h| h.id != remove_id);
+                save_history(&state.transfer_history);
+            }
+            if clear_history {
+                state.transfer_history.clear();
+                save_history(&state.transfer_history);
             }
         });
 }
 
-/// Render a single transfer row. Returns true if the per-task cancel button was clicked.
-fn render_transfer_row(ui: &mut egui::Ui, task: &TransferTask) -> bool {
-    let mut cancel_clicked = false;
+/// Unified view-data for both live tasks and historical entries.
+struct RowView<'a> {
+    direction: TransferDirection,
+    status: TaskStatus,
+    name: &'a str,
+    subfile: Option<&'a str>,
+    bytes_done: u64,
+    bytes_total: u64,
+    elapsed: f64,
+    error: Option<&'a str>,
+    /// Whether to show the trailing ✕ button (cancel for live, remove for history).
+    show_x_button: bool,
+}
 
-    let direction_icon = match task.direction {
+/// Render a single transfer row. Returns true if the trailing ✕ was clicked.
+fn render_transfer_row(ui: &mut egui::Ui, row: &RowView) -> bool {
+    let mut x_clicked = false;
+
+    let direction_icon = match row.direction {
         TransferDirection::Download => "\u{2193}", // ↓
         TransferDirection::Upload => "\u{2191}",   // ↑
     };
 
-    let (status_text, status_color) = match task.status {
+    let (status_text, status_color) = match row.status {
         TaskStatus::Active => ("Active", egui::Color32::from_rgb(100, 180, 255)),
         TaskStatus::Queued => ("Queued", egui::Color32::GRAY),
         TaskStatus::Done => ("Done", egui::Color32::GREEN),
@@ -1279,65 +1397,62 @@ fn render_transfer_row(ui: &mut egui::Ui, task: &TransferTask) -> bool {
         ui.horizontal(|ui| {
             ui.label(direction_icon);
             ui.label(
-                egui::RichText::new(&task.name)
+                egui::RichText::new(row.name)
                     .strong()
                     .color(ui.visuals().text_color()),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if matches!(task.status, TaskStatus::Queued | TaskStatus::Active) {
-                    if ui.small_button("\u{2715}").on_hover_text("Cancel").clicked() {
-                        cancel_clicked = true;
+                if row.show_x_button {
+                    let tip = if matches!(row.status, TaskStatus::Active | TaskStatus::Queued) {
+                        "Cancel"
+                    } else {
+                        "Remove from history"
+                    };
+                    if ui.small_button("\u{2715}").on_hover_text(tip).clicked() {
+                        x_clicked = true;
                     }
                 }
                 ui.label(egui::RichText::new(status_text).color(status_color));
             });
         });
 
-        // Subfile (the inner SCP filename for folder transfers)
-        if let Some(sub) = &task.subfile {
-            if task.status == TaskStatus::Active {
+        // Subfile (only meaningful for active live transfers)
+        if let Some(sub) = row.subfile {
+            if row.status == TaskStatus::Active {
                 ui.weak(format!("  \u{2937} {}", sub));
             }
         }
 
         // Thin custom progress bar with a visible track.
-        if task.bytes_total > 0 {
-            let fraction = (task.bytes_done as f32 / task.bytes_total as f32).clamp(0.0, 1.0);
+        if row.bytes_total > 0 {
+            let fraction = (row.bytes_done as f32 / row.bytes_total as f32).clamp(0.0, 1.0);
             draw_progress_bar(ui, fraction);
-        } else if task.status == TaskStatus::Active {
+        } else if row.status == TaskStatus::Active {
             ui.weak("Calculating\u{2026}");
         }
 
         // Info row: "bytes_done / bytes_total · pct%" on left, "rate/s" on right.
-        let info_left = if task.bytes_total > 0 {
-            let pct = (task.bytes_done as f32 / task.bytes_total as f32 * 100.0)
-                .clamp(0.0, 100.0);
+        let info_left = if row.bytes_total > 0 {
+            let pct =
+                (row.bytes_done as f32 / row.bytes_total as f32 * 100.0).clamp(0.0, 100.0);
             format!(
                 "{} / {} \u{00B7} {:.0}%",
-                format_size(task.bytes_done),
-                format_size(task.bytes_total),
+                format_size(row.bytes_done),
+                format_size(row.bytes_total),
                 pct
             )
         } else {
-            format_size(task.bytes_done)
+            format_size(row.bytes_done)
         };
-        let elapsed = match (task.started_at, task.finished_at) {
-            (Some(s), Some(f)) => f.duration_since(s).as_secs_f64(),
-            (Some(s), None) => s.elapsed().as_secs_f64(),
-            _ => 0.0,
-        };
-        let info_right = if task.status == TaskStatus::Active {
-            if elapsed > 0.5 && task.bytes_done > 0 {
-                let bps = task.bytes_done as f64 / elapsed;
+        let info_right = if row.status == TaskStatus::Active {
+            if row.elapsed > 0.5 && row.bytes_done > 0 {
+                let bps = row.bytes_done as f64 / row.elapsed;
                 format!("{}/s", format_size(bps as u64))
             } else {
                 "\u{2026}".to_string()
             }
-        } else if matches!(task.status, TaskStatus::Done)
-            && elapsed > 0.0
-            && task.bytes_done > 0
-        {
-            let bps = task.bytes_done as f64 / elapsed;
+        } else if row.status == TaskStatus::Done && row.elapsed > 0.0 && row.bytes_done > 0 {
+            let bps = row.bytes_done as f64 / row.elapsed;
             format!("{}/s avg", format_size(bps as u64))
         } else {
             String::new()
@@ -1351,13 +1466,12 @@ fn render_transfer_row(ui: &mut egui::Ui, task: &TransferTask) -> bool {
             });
         });
 
-        // Error message, if any
-        if let Some(err) = &task.error {
+        if let Some(err) = row.error {
             ui.colored_label(egui::Color32::RED, format!("  {}", err));
         }
     });
 
-    cancel_clicked
+    x_clicked
 }
 
 // ── Settings Window ────────────────────────────────────────────────────

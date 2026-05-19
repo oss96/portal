@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use russh_sftp::client::SftpSession;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -8,13 +9,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 // ── Per-task transfer registry ────────────────────────────────────────
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum TransferDirection {
     Upload,
     Download,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum TaskStatus {
     Queued,
     Active,
