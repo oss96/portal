@@ -26,11 +26,16 @@ fn main() -> Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
 
     let icon = load_icon();
+    let window_state = app::load_window_state();
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([window_state.width, window_state.height])
+        .with_title("Portal")
+        .with_icon(icon);
+    if window_state.maximized {
+        viewport = viewport.with_maximized(true);
+    }
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1024.0, 640.0])
-            .with_title("Portal")
-            .with_icon(icon),
+        viewport,
         ..Default::default()
     };
 

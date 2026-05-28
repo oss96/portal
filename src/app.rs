@@ -151,6 +151,53 @@ fn save_history(history: &[HistoricalTransfer]) {
     );
 }
 
+// ── Window State (persistent layout) ───────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct WindowState {
+    pub width: f32,
+    pub height: f32,
+    pub maximized: bool,
+    /// None means "use the computed default for this launch".
+    pub local_panel_width: Option<f32>,
+    pub host_panel_width: Option<f32>,
+    pub transfers_panel_width: Option<f32>,
+    pub show_host: bool,
+    pub show_transfers: bool,
+}
+
+impl Default for WindowState {
+    fn default() -> Self {
+        Self {
+            width: 1024.0,
+            height: 640.0,
+            maximized: false,
+            local_panel_width: None,
+            host_panel_width: None,
+            transfers_panel_width: None,
+            show_host: false,
+            show_transfers: false,
+        }
+    }
+}
+
+pub fn load_window_state() -> WindowState {
+    let path = config_dir().join("window_state.json");
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|d| serde_json::from_str(&d).ok())
+        .unwrap_or_default()
+}
+
+fn save_window_state(state: &WindowState) {
+    let dir = config_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(
+        dir.join("window_state.json"),
+        serde_json::to_string_pretty(state).unwrap_or_default(),
+    );
+}
+
 // ── Drag & Drop Payload ────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq)]
@@ -194,6 +241,7 @@ pub struct PortalApp {
     view: View,
     first_frame: bool,
     settings: AppSettings,
+    window_state: WindowState,
 }
 
 enum View {
@@ -351,6 +399,7 @@ impl PortalApp {
     ) -> anyhow::Result<Self> {
         save_session(host, user, 22);
         let settings = load_settings();
+        let window_state = load_window_state();
         let sftp = Arc::new(sftp);
         let handle = Arc::new(handle);
 
@@ -398,8 +447,8 @@ impl PortalApp {
                     last_clicked: None,
                     search_query: String::new(),
                 },
-                show_host: false,
-                show_transfers: false,
+                show_host: window_state.show_host,
+                show_transfers: window_state.show_transfers,
                 active_pane: PaneId::Local,
                 request_search_focus: false,
                 status: "Ready".to_string(),
@@ -417,6 +466,7 @@ impl PortalApp {
             }),
             first_frame: true,
             settings,
+            window_state,
         })
     }
 
@@ -427,6 +477,7 @@ impl PortalApp {
             view: View::Connect(ConnectState::new(settings.auto_connect)),
             first_frame: true,
             settings,
+            window_state: load_window_state(),
         }
     }
 
@@ -444,6 +495,7 @@ impl PortalApp {
             view: View::Connect(state),
             first_frame: true,
             settings: load_settings(),
+            window_state: load_window_state(),
         }
     }
 }
@@ -454,22 +506,30 @@ impl eframe::App for PortalApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if self.first_frame {
             self.first_frame = false;
-            if let Some(cmd) = egui::ViewportCommand::center_on_screen(ctx) {
-                ctx.send_viewport_cmd(cmd);
+            // We don't persist window position, only size — center the
+            // restored size on the screen, unless launching maximized.
+            if !self.window_state.maximized {
+                if let Some(cmd) = egui::ViewportCommand::center_on_screen(ctx) {
+                    ctx.send_viewport_cmd(cmd);
+                }
             }
         }
 
         match &mut self.view {
             View::Connect(state) => {
-                if let Some(browser) =
-                    show_connect_view(ctx, state, &self.runtime, &self.settings)
-                {
+                if let Some(browser) = show_connect_view(
+                    ctx,
+                    state,
+                    &self.runtime,
+                    &self.settings,
+                    &self.window_state,
+                ) {
                     self.view = View::Browser(browser);
                 }
             }
             View::Browser(state) => {
                 poll_transfer(state, &self.runtime);
-                show_browser_view(ctx, state, &self.runtime);
+                show_browser_view(ctx, state, &self.runtime, &mut self.window_state);
 
                 // Apply settings if saved
                 if !state.show_settings {
@@ -487,8 +547,31 @@ impl eframe::App for PortalApp {
                     state.settings_draft.default_host_path = state.host.path.clone();
                     save_settings(&self.settings);
                 }
+
+                // Capture the latest pane visibility into window_state so
+                // toggling Host/Transfers persists across sessions.
+                self.window_state.show_host = state.show_host;
+                self.window_state.show_transfers = state.show_transfers;
             }
         }
+
+        // Capture viewport size and maximized state every frame.
+        ctx.input(|i| {
+            let vp = i.viewport();
+            if let Some(rect) = vp.inner_rect {
+                let w = rect.width();
+                let h = rect.height();
+                if w > 0.0 && h > 0.0 {
+                    self.window_state.width = w;
+                    self.window_state.height = h;
+                }
+            }
+            self.window_state.maximized = vp.maximized.unwrap_or(false);
+        });
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        save_window_state(&self.window_state);
     }
 }
 
@@ -654,6 +737,7 @@ fn show_connect_view(
     state: &mut ConnectState,
     runtime: &tokio::runtime::Runtime,
     settings: &AppSettings,
+    window_state: &WindowState,
 ) -> Option<BrowserState> {
     let mut result = None;
 
@@ -794,8 +878,8 @@ fn show_connect_view(
                     last_clicked: None,
                     search_query: String::new(),
                             },
-                            show_host: false,
-                            show_transfers: false,
+                            show_host: window_state.show_host,
+                            show_transfers: window_state.show_transfers,
                             active_pane: PaneId::Local,
                             request_search_focus: false,
                             status: "Connected".to_string(),
@@ -834,6 +918,7 @@ fn show_browser_view(
     ctx: &egui::Context,
     state: &mut BrowserState,
     runtime: &tokio::runtime::Runtime,
+    window_state: &mut WindowState,
 ) {
     ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
         "Portal \u{2014} {}",
@@ -1200,17 +1285,19 @@ fn show_browser_view(
 
     // Right panel: transfers sidebar (toggleable)
     if state.show_transfers {
-        show_transfers_panel(ctx, state);
+        show_transfers_panel(ctx, state, window_state);
     }
 
     // Left panel: local files
-    let local_width = if state.show_host {
-        ctx.screen_rect().width() / 3.0 - 10.0
-    } else {
-        ctx.screen_rect().width() / 2.0 - 10.0
-    };
+    let local_default = window_state.local_panel_width.unwrap_or_else(|| {
+        if state.show_host {
+            ctx.screen_rect().width() / 3.0 - 10.0
+        } else {
+            ctx.screen_rect().width() / 2.0 - 10.0
+        }
+    });
     let local_response = egui::SidePanel::left("local_panel")
-        .default_width(local_width)
+        .default_width(local_default)
         .min_width(220.0)
         .resizable(true)
         .show(ctx, |ui| {
@@ -1233,6 +1320,8 @@ fn show_browser_view(
             header_action.or(list_action)
         });
 
+    window_state.local_panel_width = Some(local_response.response.rect.width());
+
     if let Some(payload) = local_response.response.dnd_release_payload::<DragPayload>() {
         match payload.source {
             PaneId::Remote | PaneId::Host if !is_transferring => {
@@ -1248,8 +1337,11 @@ fn show_browser_view(
 
     // Right panel: host files (only when toggled on)
     if state.show_host {
+        let host_default = window_state
+            .host_panel_width
+            .unwrap_or_else(|| ctx.screen_rect().width() / 3.0 - 10.0);
         let host_response = egui::SidePanel::right("host_panel")
-            .default_width(ctx.screen_rect().width() / 3.0 - 10.0)
+            .default_width(host_default)
             .min_width(220.0)
             .resizable(true)
             .show(ctx, |ui| {
@@ -1271,6 +1363,8 @@ fn show_browser_view(
                 );
                 header_action.or(list_action)
             });
+
+        window_state.host_panel_width = Some(host_response.response.rect.width());
 
         if let Some(payload) = host_response.response.dnd_release_payload::<DragPayload>() {
             match payload.source {
@@ -1332,9 +1426,13 @@ fn show_browser_view(
 
 // ── Transfers Sidebar ──────────────────────────────────────────────────
 
-fn show_transfers_panel(ctx: &egui::Context, state: &mut BrowserState) {
-    egui::SidePanel::right("transfers_panel")
-        .default_width(360.0)
+fn show_transfers_panel(
+    ctx: &egui::Context,
+    state: &mut BrowserState,
+    window_state: &mut WindowState,
+) {
+    let response = egui::SidePanel::right("transfers_panel")
+        .default_width(window_state.transfers_panel_width.unwrap_or(360.0))
         .min_width(280.0)
         .max_width(520.0)
         .resizable(true)
@@ -1479,6 +1577,7 @@ fn show_transfers_panel(ctx: &egui::Context, state: &mut BrowserState) {
                 save_history(&state.transfer_history);
             }
         });
+    window_state.transfers_panel_width = Some(response.response.rect.width());
 }
 
 /// Unified view-data for both live tasks and historical entries.
