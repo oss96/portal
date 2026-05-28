@@ -1,5 +1,6 @@
 use crate::{fs, ssh, transfer};
 use eframe::egui;
+use egui_extras::{Column, TableBuilder};
 use russh::client;
 use russh_sftp::client::SftpSession;
 use serde::{Deserialize, Serialize};
@@ -74,6 +75,8 @@ struct AppSettings {
     auto_connect: bool,
     #[serde(default = "default_max_parallel")]
     max_parallel_transfers: usize,
+    #[serde(default)]
+    show_permissions_column: bool,
 }
 
 fn default_host_path() -> String {
@@ -95,6 +98,7 @@ impl Default for AppSettings {
             default_host_path: "/".to_string(),
             auto_connect: false,
             max_parallel_transfers: default_max_parallel(),
+            show_permissions_column: false,
         }
     }
 }
@@ -266,8 +270,64 @@ struct BrowserState {
     confirm_delete: Option<(DeleteTarget, Vec<fs::FileEntry>)>,
     new_folder: Option<(PaneId, String)>,
     merge_folders: Option<(PaneId, Vec<fs::FileEntry>, String, bool)>,
+    chmod_dialog: Option<ChmodDialog>,
+    show_permissions_column: bool,
     transfer_history: Vec<HistoricalTransfer>,
     next_history_id: u64,
+}
+
+struct ChmodDialog {
+    pane_id: PaneId,
+    entries: Vec<fs::FileEntry>,
+    // Owner / Group / Others × Read / Write / Execute
+    perms: [[bool; 3]; 3],
+    recursive: bool,
+}
+
+impl ChmodDialog {
+    fn from_entries(pane_id: PaneId, entries: Vec<fs::FileEntry>) -> Self {
+        // Seed from the first entry's current permissions, if known.
+        let seed = entries
+            .iter()
+            .find_map(|e| e.permissions)
+            .unwrap_or(0o644);
+        let perms = [
+            [
+                seed & 0o400 != 0,
+                seed & 0o200 != 0,
+                seed & 0o100 != 0,
+            ],
+            [
+                seed & 0o040 != 0,
+                seed & 0o020 != 0,
+                seed & 0o010 != 0,
+            ],
+            [
+                seed & 0o004 != 0,
+                seed & 0o002 != 0,
+                seed & 0o001 != 0,
+            ],
+        ];
+        let recursive = entries.iter().any(|e| e.is_dir);
+        Self { pane_id, entries, perms, recursive }
+    }
+
+    fn to_mode(&self) -> u32 {
+        let mut m = 0u32;
+        let bits = [
+            [0o400, 0o200, 0o100],
+            [0o040, 0o020, 0o010],
+            [0o004, 0o002, 0o001],
+        ];
+        for (cls, row) in self.perms.iter().enumerate() {
+            for (perm, on) in row.iter().enumerate() {
+                if *on {
+                    m |= bits[cls][perm];
+                }
+            }
+        }
+        m
+    }
 }
 
 struct PaneState {
@@ -350,6 +410,8 @@ impl PortalApp {
                 confirm_delete: None,
                 new_folder: None,
                 merge_folders: None,
+                chmod_dialog: None,
+                show_permissions_column: settings.show_permissions_column,
                 transfer_history: history,
                 next_history_id,
             }),
@@ -744,6 +806,8 @@ fn show_connect_view(
                             confirm_delete: None,
                 new_folder: None,
                 merge_folders: None,
+                            chmod_dialog: None,
+                            show_permissions_column: settings.show_permissions_column,
                             transfer_history: history,
                             next_history_id,
                         });
@@ -804,6 +868,11 @@ fn show_browser_view(
     // Merge folders dialog
     if state.merge_folders.is_some() {
         show_merge_dialog(ctx, state, runtime);
+    }
+
+    // Permissions dialog
+    if state.chmod_dialog.is_some() {
+        show_chmod_dialog(ctx, state, runtime);
     }
 
     // Bottom panel
@@ -899,6 +968,38 @@ fn show_browser_view(
                             .filter(|e| e.is_dir && e.name != "..")
                             .collect();
                         state.merge_folders = Some((pane_id, folders, String::new(), true));
+                    }
+                }
+
+                // Set permissions: operates on whichever remote pane has a selection
+                let perm_pane = if has_host_sel {
+                    Some(PaneId::Host)
+                } else if has_remote_sel {
+                    Some(PaneId::Remote)
+                } else {
+                    None
+                };
+                if ui
+                    .add_enabled(
+                        perm_pane.is_some(),
+                        egui::Button::new(" \u{1F510} Permissions "),
+                    )
+                    .on_hover_text("Set read/write/execute permissions on selected items")
+                    .clicked()
+                {
+                    let pane_id = perm_pane.unwrap();
+                    let pane = match pane_id {
+                        PaneId::Host => &state.host,
+                        _ => &state.remote,
+                    };
+                    let entries: Vec<fs::FileEntry> = pane
+                        .selected
+                        .iter()
+                        .filter_map(|&i| pane.entries.get(i).cloned())
+                        .filter(|e| e.name != "..")
+                        .collect();
+                    if !entries.is_empty() {
+                        state.chmod_dialog = Some(ChmodDialog::from_entries(pane_id, entries));
                     }
                 }
 
@@ -1078,6 +1179,21 @@ fn show_browser_view(
                     if ui.button(transfers_label).clicked() {
                         state.show_transfers = !state.show_transfers;
                     }
+                    let perms_label = if state.show_permissions_column {
+                        "\u{1F510} Permissions \u{2713}"
+                    } else {
+                        "\u{1F510} Permissions"
+                    };
+                    if ui
+                        .button(perms_label)
+                        .on_hover_text("Show/hide the permission column on Remote and Host panes")
+                        .clicked()
+                    {
+                        state.show_permissions_column = !state.show_permissions_column;
+                        state.settings_draft.show_permissions_column =
+                            state.show_permissions_column;
+                        save_settings(&state.settings_draft);
+                    }
                 });
             });
         });
@@ -1112,6 +1228,7 @@ fn show_browser_view(
                 &mut state.local,
                 PaneId::Local,
                 &mut state.active_pane,
+                state.show_permissions_column,
             );
             header_action.or(list_action)
         });
@@ -1150,6 +1267,7 @@ fn show_browser_view(
                     &mut state.host,
                     PaneId::Host,
                     &mut state.active_pane,
+                    state.show_permissions_column,
                 );
                 header_action.or(list_action)
             });
@@ -1197,6 +1315,7 @@ fn show_browser_view(
             &mut state.remote,
             PaneId::Remote,
             &mut state.active_pane,
+            state.show_permissions_column,
         );
         header_action.or(list_action)
     });
@@ -1394,13 +1513,17 @@ fn render_transfer_row(ui: &mut egui::Ui, row: &RowView) -> bool {
     };
 
     egui::Frame::group(ui.style()).show(ui, |ui| {
+        // Lock the frame's inner ui to the full available width so the
+        // progress bar and right-aligned status/✕ always have the same
+        // content rect, regardless of how long this row's filename is.
+        ui.set_min_width(ui.available_width());
+
         ui.horizontal(|ui| {
             ui.label(direction_icon);
-            ui.label(
-                egui::RichText::new(row.name)
-                    .strong()
-                    .color(ui.visuals().text_color()),
-            );
+            // Right side first (right-to-left layout), then the filename
+            // fills the remaining space with truncation instead of wrap —
+            // otherwise a long name wraps to multiple lines and the
+            // right-aligned items end up visually stacked above it.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if row.show_x_button {
                     let tip = if matches!(row.status, TaskStatus::Active | TaskStatus::Queued) {
@@ -1413,13 +1536,29 @@ fn render_transfer_row(ui: &mut egui::Ui, row: &RowView) -> bool {
                     }
                 }
                 ui.label(egui::RichText::new(status_text).color(status_color));
+
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(row.name)
+                                .strong()
+                                .color(ui.visuals().text_color()),
+                        )
+                        .truncate(),
+                    )
+                    .on_hover_text(row.name);
+                });
             });
         });
 
         // Subfile (only meaningful for active live transfers)
         if let Some(sub) = row.subfile {
             if row.status == TaskStatus::Active {
-                ui.weak(format!("  \u{2937} {}", sub));
+                let text = format!("  \u{2937} {}", sub);
+                ui.add(
+                    egui::Label::new(egui::RichText::new(&text).weak()).truncate(),
+                )
+                .on_hover_text(sub);
             }
         }
 
@@ -1828,6 +1967,105 @@ fn show_merge_dialog(
     }
 }
 
+fn show_chmod_dialog(
+    ctx: &egui::Context,
+    state: &mut BrowserState,
+    runtime: &tokio::runtime::Runtime,
+) {
+    let mut action = None; // None = keep open, Some(true) = apply, Some(false) = cancel
+
+    egui::Window::new("\u{1F510} Set Permissions")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            let dlg = state.chmod_dialog.as_mut().unwrap();
+            let count = dlg.entries.len();
+            ui.label(format!("Apply to {} item(s):", count));
+
+            egui::ScrollArea::vertical()
+                .max_height(120.0)
+                .show(ui, |ui| {
+                    for entry in &dlg.entries {
+                        let icon = if entry.is_dir { "\u{1F4C1}" } else { "\u{1F4C4}" };
+                        ui.label(format!("{} {}", icon, entry.name));
+                    }
+                });
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(6.0);
+
+            egui::Grid::new("chmod_grid")
+                .num_columns(4)
+                .spacing([16.0, 6.0])
+                .show(ui, |ui| {
+                    ui.label("");
+                    ui.strong("Read");
+                    ui.strong("Write");
+                    ui.strong("Execute");
+                    ui.end_row();
+
+                    for (cls_idx, cls_name) in ["Owner", "Group", "Others"].iter().enumerate() {
+                        ui.label(*cls_name);
+                        ui.checkbox(&mut dlg.perms[cls_idx][0], "");
+                        ui.checkbox(&mut dlg.perms[cls_idx][1], "");
+                        ui.checkbox(&mut dlg.perms[cls_idx][2], "");
+                        ui.end_row();
+                    }
+                });
+
+            ui.add_space(8.0);
+            let mode = dlg.to_mode();
+            ui.weak(format!("Octal: {:03o}", mode));
+
+            ui.add_space(4.0);
+            if dlg.entries.iter().any(|e| e.is_dir) {
+                ui.checkbox(&mut dlg.recursive, "Apply recursively to folder contents");
+            }
+
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("Apply").clicked() {
+                    action = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    action = Some(false);
+                }
+            });
+        });
+
+    match action {
+        Some(true) => {
+            let dlg = state.chmod_dialog.take().unwrap();
+            let mode = dlg.to_mode();
+            let base_path = match dlg.pane_id {
+                PaneId::Host => state.host.path.clone(),
+                _ => state.remote.path.clone(),
+            };
+            match runtime.block_on(fs::chmod_remote(
+                &*state.handle,
+                &base_path,
+                &dlg.entries,
+                mode,
+                dlg.recursive,
+            )) {
+                Ok(n) => state.status = format!("Updated permissions on {} item(s)", n),
+                Err(e) => state.status = format!("Permission error: {}", e),
+            }
+            // Refresh the pane so the column reflects the new mode.
+            match dlg.pane_id {
+                PaneId::Host => refresh_remote_pane(&state.sftp, runtime, &mut state.host),
+                _ => refresh_remote_pane(&state.sftp, runtime, &mut state.remote),
+            }
+        }
+        Some(false) => {
+            state.chmod_dialog = None;
+        }
+        None => {}
+    }
+}
+
 // ── Pane Rendering ─────────────────────────────────────────────────────
 
 fn render_search_input(
@@ -1924,177 +2162,278 @@ enum PaneAction {
     JumpToPath(String),
 }
 
+/// Owner-permission summary in plain words for the column cell.
+/// E.g. 0o644 -> "Read+Write", 0o755 -> "Read+Write+Exec", 0o400 -> "Read".
+fn owner_permission_label(mode: u32) -> String {
+    let parts: Vec<&str> = [
+        (mode & 0o400 != 0, "Read"),
+        (mode & 0o200 != 0, "Write"),
+        (mode & 0o100 != 0, "Exec"),
+    ]
+    .iter()
+    .filter_map(|(on, name)| on.then_some(*name))
+    .collect();
+    if parts.is_empty() {
+        "None".to_string()
+    } else {
+        parts.join("+")
+    }
+}
+
+/// Full breakdown shown in the tooltip:
+/// "Owner: Read+Write  Group: Read  Others: Read"
+fn full_permission_label(mode: u32) -> String {
+    let class = |shift: u32| -> String {
+        let m = (mode >> shift) & 0o7;
+        let parts: Vec<&str> = [
+            (m & 0o4 != 0, "Read"),
+            (m & 0o2 != 0, "Write"),
+            (m & 0o1 != 0, "Exec"),
+        ]
+        .iter()
+        .filter_map(|(on, name)| on.then_some(*name))
+        .collect();
+        if parts.is_empty() {
+            "None".to_string()
+        } else {
+            parts.join("+")
+        }
+    };
+    format!(
+        "Owner: {}\nGroup: {}\nOthers: {}\nOctal: {:o}",
+        class(6),
+        class(3),
+        class(0),
+        mode & 0o7777
+    )
+}
+
 fn render_file_list(
     ui: &mut egui::Ui,
     pane: &mut PaneState,
     pane_id: PaneId,
     active_pane: &mut PaneId,
+    show_permissions: bool,
 ) -> Option<PaneAction> {
+    let q = pane.search_query.to_lowercase();
+    let show_meta = show_permissions && pane_id != PaneId::Local;
+    let modifiers = ui.ctx().input(|i| i.modifiers);
+
+    // Pre-compute which entry indices pass the filter
+    let visible: Vec<usize> = (0..pane.entries.len())
+        .filter(|&i| {
+            let e = &pane.entries[i];
+            if q.is_empty() {
+                true
+            } else if e.name == ".." {
+                false
+            } else {
+                e.name.to_lowercase().contains(&q)
+            }
+        })
+        .collect();
+
+    // Buffer interactions; we apply selection/navigation after the table closes
+    // so we never need a mutable borrow of `pane` from inside the body closure.
+    let mut clicked: Option<usize> = None;
+    let mut double_clicked: Option<usize> = None;
+
+    let mut table = TableBuilder::new(ui)
+        .striped(false)
+        .resizable(true)
+        .sense(egui::Sense::click_and_drag())
+        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+        .auto_shrink([false, false])
+        .column(Column::remainder().at_least(120.0).clip(true));
+
+    if show_meta {
+        table = table
+            .column(Column::initial(70.0).at_least(40.0).clip(true))
+            .column(Column::initial(70.0).at_least(40.0).clip(true))
+            .column(Column::initial(140.0).at_least(70.0).clip(true));
+    }
+
+    table = table.column(Column::initial(80.0).at_least(50.0).clip(true));
+
+    table
+        .header(20.0, |mut header| {
+            header.col(|ui| {
+                ui.strong("Name");
+            });
+            if show_meta {
+                header.col(|ui| {
+                    ui.strong("Owner");
+                });
+                header.col(|ui| {
+                    ui.strong("Group");
+                });
+                header.col(|ui| {
+                    ui.strong("Permissions");
+                });
+            }
+            header.col(|ui| {
+                ui.strong("Size");
+            });
+        })
+        .body(|mut body| {
+            for &i in &visible {
+                let entry = &pane.entries[i];
+                let is_parent = i == 0 && entry.name == "..";
+                let is_selected = pane.selected.contains(&i);
+
+                body.row(22.0, |mut row| {
+                    row.set_selected(is_selected);
+
+                    // Name cell: checkbox glyph + icon + filename in one horizontal flow
+                    row.col(|ui| {
+                        if !is_parent {
+                            ui.label(if is_selected { "\u{2611}" } else { "\u{2610}" });
+                        }
+                        let icon = if entry.is_dir { "\u{1F4C1}" } else { "\u{1F4C4}" };
+                        let name_color = if entry.is_dir {
+                            egui::Color32::from_rgb(100, 149, 237)
+                        } else {
+                            ui.visuals().text_color()
+                        };
+                        ui.label(
+                            egui::RichText::new(format!("{} {}", icon, &entry.name))
+                                .color(name_color),
+                        );
+                    });
+
+                    if show_meta {
+                        if is_parent {
+                            row.col(|_| {});
+                            row.col(|_| {});
+                            row.col(|_| {});
+                        } else {
+                            row.col(|ui| {
+                                ui.weak(entry.owner_display());
+                            });
+                            row.col(|ui| {
+                                ui.weak(entry.group_display());
+                            });
+                            row.col(|ui| {
+                                if let Some(mode) = entry.permissions {
+                                    ui.weak(owner_permission_label(mode));
+                                } else {
+                                    ui.weak("-");
+                                }
+                            });
+                        }
+                    }
+
+                    row.col(|ui| {
+                        let size_text = if entry.is_dir {
+                            "<DIR>".to_string()
+                        } else {
+                            format_size(entry.size)
+                        };
+                        ui.weak(size_text);
+                    });
+
+                    // Row-level response: union of all cells. Attach tooltip and
+                    // drag payload here, then capture click/double-click for the
+                    // post-table interaction pass.
+                    let resp = row.response();
+                    let resp = if show_meta && !is_parent {
+                        let mut lines = vec![
+                            format!("Owner: {}", entry.owner_display()),
+                            format!("Group: {}", entry.group_display()),
+                        ];
+                        if let Some(mode) = entry.permissions {
+                            lines.push(String::new());
+                            lines.push(full_permission_label(mode));
+                        }
+                        resp.on_hover_text(lines.join("\n"))
+                    } else {
+                        resp
+                    };
+
+                    if !is_parent {
+                        let drag_entries = if is_selected {
+                            pane.selected
+                                .iter()
+                                .filter_map(|&idx| pane.entries.get(idx).cloned())
+                                .collect()
+                        } else {
+                            vec![entry.clone()]
+                        };
+                        resp.dnd_set_drag_payload(DragPayload {
+                            source: pane_id,
+                            entries: drag_entries,
+                            src_path: pane.path.clone(),
+                        });
+                    }
+
+                    if resp.double_clicked() {
+                        double_clicked = Some(i);
+                    } else if resp.clicked() {
+                        clicked = Some(i);
+                    }
+                });
+            }
+        });
+
+    // Apply buffered interactions
     let mut action: Option<PaneAction> = None;
 
-    let q = pane.search_query.to_lowercase();
-    let mut visible_count = 0usize;
-
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        ui.style_mut().spacing.item_spacing.y = 1.0;
-
-        for (i, entry) in pane.entries.iter().enumerate() {
-            if !q.is_empty() {
-                if entry.name == ".." {
-                    continue;
-                }
-                if !entry.name.to_lowercase().contains(&q) {
-                    continue;
-                }
-            }
-            visible_count += 1;
-            let is_parent = i == 0 && entry.name == "..";
-            let is_selected = pane.selected.contains(&i);
-
-            let row_response = {
-                let available_width = ui.available_width();
-                let desired_size = egui::vec2(available_width, 22.0);
-                let (rect, response) =
-                    ui.allocate_exact_size(desired_size, egui::Sense::click_and_drag());
-
-                if response.hovered() {
-                    ui.painter()
-                        .rect_filled(rect, 2.0, ui.visuals().widgets.hovered.bg_fill);
-                }
-                if is_selected {
-                    ui.painter().rect_filled(
-                        rect,
-                        2.0,
-                        egui::Color32::from_rgba_premultiplied(100, 149, 237, 40),
-                    );
-                }
-                if response.hovered() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                }
-
-                let text_rect = rect.shrink2(egui::vec2(4.0, 0.0));
-                let size_reserved: f32 = 80.0;
-
-                if !is_parent {
-                    let check = if is_selected { "\u{2611}" } else { "\u{2610}" };
-                    ui.painter().text(
-                        text_rect.left_center(),
-                        egui::Align2::LEFT_CENTER,
-                        check,
-                        egui::FontId::proportional(14.0),
-                        ui.visuals().text_color(),
-                    );
-                }
-
-                let name_offset = if is_parent { 0.0 } else { 20.0 };
-                let icon = if entry.is_dir {
-                    "\u{1F4C1} "
-                } else {
-                    "\u{1F4C4} "
-                };
-                let name_color = if entry.is_dir {
-                    egui::Color32::from_rgb(100, 149, 237)
-                } else {
-                    ui.visuals().text_color()
-                };
-
-                let name_clip = egui::Rect::from_min_max(
-                    egui::pos2(text_rect.left() + name_offset, rect.top()),
-                    egui::pos2(text_rect.right() - size_reserved, rect.bottom()),
-                );
-                ui.painter_at(name_clip).text(
-                    egui::pos2(text_rect.left() + name_offset, text_rect.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    format!("{}{}", icon, entry.name),
-                    egui::FontId::proportional(14.0),
-                    name_color,
-                );
-
-                let size_text = if entry.is_dir {
-                    "<DIR>".to_string()
-                } else {
-                    format_size(entry.size)
-                };
-                ui.painter().text(
-                    text_rect.right_center(),
-                    egui::Align2::RIGHT_CENTER,
-                    size_text,
-                    egui::FontId::proportional(13.0),
-                    ui.visuals().weak_text_color(),
-                );
-
-                if !is_parent {
-                    let drag_entries = if is_selected {
-                        pane.selected
-                            .iter()
-                            .filter_map(|&idx| pane.entries.get(idx).cloned())
-                            .collect()
-                    } else {
-                        vec![entry.clone()]
-                    };
-                    response.dnd_set_drag_payload(DragPayload {
-                        source: pane_id,
-                        entries: drag_entries,
-                        src_path: pane.path.clone(),
-                    });
-                }
-
-                response
-            };
-
-            if row_response.clicked() || row_response.double_clicked() {
-                *active_pane = pane_id;
-            }
-
-            if entry.is_dir && row_response.double_clicked() {
+    if let Some(i) = double_clicked {
+        *active_pane = pane_id;
+        if let Some(entry) = pane.entries.get(i) {
+            if entry.is_dir {
+                let is_parent = i == 0 && entry.name == "..";
                 action = Some(if is_parent {
                     PaneAction::GoParent
                 } else {
                     PaneAction::EnterDir(entry.name.clone())
                 });
-            } else if row_response.clicked() && !is_parent {
-                let modifiers = ui.input(|i| i.modifiers);
-                if modifiers.shift && pane.last_clicked.is_some() {
-                    // Shift+click: select range from last_clicked to current
-                    let anchor = pane.last_clicked.unwrap();
-                    let lo = anchor.min(i);
-                    let hi = anchor.max(i);
-                    if !modifiers.ctrl && !modifiers.command {
-                        pane.selected.clear();
-                    }
-                    let q = pane.search_query.to_lowercase();
-                    for idx in lo..=hi {
-                        if let Some(e) = pane.entries.get(idx) {
-                            if e.name == ".." {
-                                continue;
-                            }
-                            if !q.is_empty() && !e.name.to_lowercase().contains(&q) {
-                                continue;
-                            }
-                            pane.selected.insert(idx);
-                        }
-                    }
-                } else if modifiers.ctrl || modifiers.command {
-                    // Ctrl+click: toggle single item
-                    if is_selected {
-                        pane.selected.remove(&i);
-                    } else {
-                        pane.selected.insert(i);
-                    }
-                    pane.last_clicked = Some(i);
-                } else {
-                    // Plain click: select only this item
-                    pane.selected.clear();
-                    pane.selected.insert(i);
-                    pane.last_clicked = Some(i);
-                }
             }
         }
-
-        if !q.is_empty() && visible_count == 0 {
-            ui.weak("No matches");
+    } else if let Some(i) = clicked {
+        *active_pane = pane_id;
+        let is_parent = i == 0 && pane.entries.get(i).is_some_and(|e| e.name == "..");
+        if !is_parent {
+            let is_selected = pane.selected.contains(&i);
+            if modifiers.shift && pane.last_clicked.is_some() {
+                let anchor = pane.last_clicked.unwrap();
+                let lo = anchor.min(i);
+                let hi = anchor.max(i);
+                if !modifiers.ctrl && !modifiers.command {
+                    pane.selected.clear();
+                }
+                let lq = pane.search_query.to_lowercase();
+                for idx in lo..=hi {
+                    if let Some(e) = pane.entries.get(idx) {
+                        if e.name == ".." {
+                            continue;
+                        }
+                        if !lq.is_empty() && !e.name.to_lowercase().contains(&lq) {
+                            continue;
+                        }
+                        pane.selected.insert(idx);
+                    }
+                }
+            } else if modifiers.ctrl || modifiers.command {
+                if is_selected {
+                    pane.selected.remove(&i);
+                } else {
+                    pane.selected.insert(i);
+                }
+                pane.last_clicked = Some(i);
+            } else {
+                pane.selected.clear();
+                pane.selected.insert(i);
+                pane.last_clicked = Some(i);
+            }
         }
-    });
+    }
+
+    if !q.is_empty() && visible.is_empty() {
+        // The TableBuilder consumed the ui; we can't easily add a label after it
+        // without acquiring a fresh ui handle. The user sees an empty list, which
+        // is acceptable feedback for "no matches".
+    }
 
     action
 }

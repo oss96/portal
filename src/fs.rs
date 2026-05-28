@@ -8,6 +8,13 @@ pub struct FileEntry {
     pub name: String,
     pub is_dir: bool,
     pub size: u64,
+    /// Raw Unix mode (low 12 bits are permission bits). `None` for local
+    /// entries on Windows or remote entries where the server didn't report it.
+    pub permissions: Option<u32>,
+    pub user: Option<String>,
+    pub group: Option<String>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
 }
 
 impl FileEntry {
@@ -16,7 +23,28 @@ impl FileEntry {
             name: "..".to_string(),
             is_dir: true,
             size: 0,
+            permissions: None,
+            user: None,
+            group: None,
+            uid: None,
+            gid: None,
         }
+    }
+
+    /// Human-readable owner: username if known, otherwise the numeric uid.
+    pub fn owner_display(&self) -> String {
+        self.user
+            .clone()
+            .or_else(|| self.uid.map(|n| n.to_string()))
+            .unwrap_or_else(|| "-".to_string())
+    }
+
+    /// Human-readable group: group name if known, otherwise the numeric gid.
+    pub fn group_display(&self) -> String {
+        self.group
+            .clone()
+            .or_else(|| self.gid.map(|n| n.to_string()))
+            .unwrap_or_else(|| "-".to_string())
     }
 }
 
@@ -56,6 +84,11 @@ pub fn list_local(dir: &Path) -> Result<Vec<FileEntry>> {
             name: entry.file_name().to_string_lossy().to_string(),
             is_dir: metadata.is_dir(),
             size: metadata.len(),
+            permissions: None,
+            user: None,
+            group: None,
+            uid: None,
+            gid: None,
         });
     }
 
@@ -75,12 +108,23 @@ pub async fn list_remote(sftp: &SftpSession, dir: &str) -> Result<Vec<FileEntry>
         }
 
         let is_dir = entry.file_type().is_dir();
-        let size = entry.metadata().len();
+        let metadata = entry.metadata();
+        let size = metadata.len();
+        let permissions = metadata.permissions;
+        let user = metadata.user.clone();
+        let group = metadata.group.clone();
+        let uid = metadata.uid;
+        let gid = metadata.gid;
 
         entries.push(FileEntry {
             name,
             is_dir,
             size,
+            permissions,
+            user,
+            group,
+            uid,
+            gid,
         });
     }
 
@@ -127,6 +171,31 @@ async fn delete_remote_recursive(sftp: &SftpSession, path: &str) -> Result<()> {
     }
     sftp.remove_dir(path).await?;
     Ok(())
+}
+
+/// Change permissions on remote files/folders. `mode` is the standard Unix
+/// permission bits (low 12 bits — only the low 9 are typically set by the UI).
+/// If `recursive` is true, directories receive `chmod -R`.
+pub async fn chmod_remote<H: client::Handler>(
+    handle: &client::Handle<H>,
+    base_dir: &str,
+    entries: &[FileEntry],
+    mode: u32,
+    recursive: bool,
+) -> Result<usize> {
+    let base = base_dir.trim_end_matches('/');
+    let mut count = 0;
+    for entry in entries {
+        if entry.name == ".." {
+            continue;
+        }
+        let path = format!("{}/{}", base, entry.name);
+        let flag = if recursive && entry.is_dir { "-R " } else { "" };
+        let cmd = format!("chmod {}{:o} {}", flag, mode & 0o7777, shell_escape(&path));
+        exec_remote_cmd(handle, &cmd).await?;
+        count += 1;
+    }
+    Ok(count)
 }
 
 /// Copy files/folders on the remote host via `cp -r`.
