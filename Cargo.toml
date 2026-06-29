@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-dirs = "5"
+dirs = "6"
 eframe = "0.31"
 egui_extras = "0.31"
 serde = { version = "1", features = ["derive"] }
