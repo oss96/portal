@@ -56,6 +56,22 @@ the Forgejo repository by `.claude/skills/release/release.sh`, which bumps the
 version in `Cargo.toml`, builds `portal.exe`, tags `X.Y.Z`, pushes, and uploads
 the binary to a new release. Run it with `--dry-run` first to see the plan.
 
+## Updating
+
+Portal updates itself from the releases of its own repository. On launch it asks
+Forgejo for the latest release and, when the tag is newer than the running build,
+offers it in the status bar and under **Settings → Updates**. Installing downloads
+`portal.exe` next to the running executable, renames the old binary to
+`portal.exe.old`, and puts the new one in its place; restarting runs it. The
+`.old` file is deleted on the next launch, once it is no longer in use.
+
+Only `https://git.ossalali.com` is accepted as a source, the download must match
+the size the release advertises, and it must be a Windows executable. Drafts and
+prereleases are ignored. The launch check can be turned off in Settings.
+
+Portal has to be able to write to its own directory for this to work, so an
+install under `C:\Program Files` needs elevation.
+
 ## Configuration
 
 Settings and session data are stored in `%APPDATA%/portal/`:

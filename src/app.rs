@@ -1,4 +1,4 @@
-use crate::{fs, ssh, transfer};
+use crate::{fs, ssh, transfer, update};
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 use russh::client;
@@ -77,6 +77,12 @@ struct AppSettings {
     max_parallel_transfers: usize,
     #[serde(default)]
     show_permissions_column: bool,
+    #[serde(default = "default_check_updates")]
+    check_updates_on_launch: bool,
+}
+
+fn default_check_updates() -> bool {
+    true
 }
 
 fn default_host_path() -> String {
@@ -99,6 +105,7 @@ impl Default for AppSettings {
             auto_connect: false,
             max_parallel_transfers: default_max_parallel(),
             show_permissions_column: false,
+            check_updates_on_launch: default_check_updates(),
         }
     }
 }
@@ -242,6 +249,7 @@ pub struct PortalApp {
     first_frame: bool,
     settings: AppSettings,
     window_state: WindowState,
+    updater: update::Updater,
 }
 
 enum View {
@@ -467,6 +475,7 @@ impl PortalApp {
             first_frame: true,
             settings,
             window_state,
+            updater: update::Updater::new(),
         })
     }
 
@@ -478,6 +487,7 @@ impl PortalApp {
             first_frame: true,
             settings,
             window_state: load_window_state(),
+            updater: update::Updater::new(),
         }
     }
 
@@ -496,6 +506,7 @@ impl PortalApp {
             first_frame: true,
             settings: load_settings(),
             window_state: load_window_state(),
+            updater: update::Updater::new(),
         }
     }
 }
@@ -514,6 +525,9 @@ impl eframe::App for PortalApp {
                     ctx.send_viewport_cmd(cmd);
                 }
             }
+            if self.settings.check_updates_on_launch {
+                self.updater.check(&self.runtime, &ctx);
+            }
         }
 
         match &mut self.view {
@@ -530,7 +544,13 @@ impl eframe::App for PortalApp {
             }
             View::Browser(state) => {
                 poll_transfer(state, &self.runtime);
-                show_browser_view(ui, state, &self.runtime, &mut self.window_state);
+                show_browser_view(
+                    ui,
+                    state,
+                    &self.runtime,
+                    &mut self.window_state,
+                    &mut self.updater,
+                );
 
                 // Apply settings if saved
                 if !state.show_settings {
@@ -569,6 +589,17 @@ impl eframe::App for PortalApp {
             }
             self.window_state.maximized = vp.maximized.unwrap_or(false);
         });
+
+        // Relaunch into the freshly installed binary. Window state is written
+        // first so the new process starts with the current geometry.
+        if self.updater.restart_requested {
+            self.updater.restart_requested = false;
+            save_window_state(&self.window_state);
+            match self.updater.relaunch() {
+                Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                Err(e) => self.updater.set_error(format!("Restart failed: {e:#}")),
+            }
+        }
     }
 
     fn on_exit(&mut self) {
@@ -747,6 +778,7 @@ fn show_connect_view(
             ui.add_space(40.0);
             ui.heading("Portal");
             ui.label("SSH File Manager");
+            ui.weak(format!("v{}", update::CURRENT_VERSION));
             ui.add_space(20.0);
 
             if !state.saved_sessions.is_empty() {
@@ -920,6 +952,7 @@ fn show_browser_view(
     state: &mut BrowserState,
     runtime: &tokio::runtime::Runtime,
     window_state: &mut WindowState,
+    updater: &mut update::Updater,
 ) {
     let ctx = ui.ctx().clone();
     ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
@@ -939,7 +972,7 @@ fn show_browser_view(
 
     // Settings window (floating)
     if state.show_settings {
-        show_settings_window(&ctx, state);
+        show_settings_window(&ctx, state, runtime, updater);
     }
 
     // Delete confirmation dialog
@@ -1247,6 +1280,27 @@ fn show_browser_view(
 
                 // Right-aligned buttons
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    match updater.status() {
+                        update::UpdateStatus::Available(info) => {
+                            if ui
+                                .button(format!("\u{2B07} Update {}", info.version))
+                                .on_hover_text("A newer release is available")
+                                .clicked()
+                            {
+                                state.show_settings = true;
+                            }
+                        }
+                        update::UpdateStatus::ReadyToRestart { version } => {
+                            if ui
+                                .button(format!("\u{27F3} Restart for {}", version))
+                                .on_hover_text("The update is installed; restart to run it")
+                                .clicked()
+                            {
+                                updater.restart_requested = true;
+                            }
+                        }
+                        _ => {}
+                    }
                     if ui.button("\u{2699} Settings").clicked() {
                         state.show_settings = !state.show_settings;
                     }
@@ -1714,9 +1768,115 @@ fn render_transfer_row(ui: &mut egui::Ui, row: &RowView) -> bool {
     x_clicked
 }
 
+// ── Updates ────────────────────────────────────────────────────────────
+
+fn render_update_section(
+    ui: &mut egui::Ui,
+    runtime: &tokio::runtime::Runtime,
+    updater: &mut update::Updater,
+) {
+    ui.label(egui::RichText::new("Updates").strong());
+    ui.add_space(4.0);
+
+    let status = updater.status();
+    // Buffered so the buttons below don't borrow `updater` while `status` is read.
+    let mut start_download: Option<update::ReleaseInfo> = None;
+
+    match &status {
+        update::UpdateStatus::Idle => {
+            ui.label(format!("Portal {}", update::CURRENT_VERSION));
+        }
+        update::UpdateStatus::Checking => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Checking for updates\u{2026}");
+            });
+        }
+        update::UpdateStatus::UpToDate => {
+            ui.label(format!(
+                "Portal {} is the latest release.",
+                update::CURRENT_VERSION
+            ));
+        }
+        update::UpdateStatus::Available(info) => {
+            ui.label(format!(
+                "Version {} is available; this is {}.",
+                info.version,
+                update::CURRENT_VERSION
+            ));
+            ui.hyperlink_to("Release notes", &info.page_url);
+        }
+        update::UpdateStatus::Downloading {
+            info,
+            received,
+            total,
+        } => {
+            let fraction = if *total > 0 {
+                *received as f32 / *total as f32
+            } else {
+                0.0
+            };
+            ui.add(
+                egui::ProgressBar::new(fraction)
+                    .show_percentage()
+                    .desired_width(280.0),
+            )
+            .on_hover_text(format!(
+                "{} of {}",
+                format_size(*received),
+                format_size(*total)
+            ));
+            ui.label(format!("Downloading version {}\u{2026}", info.version));
+        }
+        update::UpdateStatus::ReadyToRestart { version } => {
+            ui.label(format!(
+                "Version {} is installed. Restart to run it.",
+                version
+            ));
+        }
+        update::UpdateStatus::Error(message) => {
+            ui.colored_label(egui::Color32::RED, message);
+        }
+    }
+
+    ui.add_space(6.0);
+
+    ui.horizontal(|ui| {
+        let busy = updater.is_busy();
+        if ui
+            .add_enabled(!busy, egui::Button::new("  Check for updates  "))
+            .clicked()
+        {
+            updater.check(runtime, ui.ctx());
+        }
+        match &status {
+            update::UpdateStatus::Available(info) => {
+                if ui.button("  Download and install  ").clicked() {
+                    start_download = Some(info.clone());
+                }
+            }
+            update::UpdateStatus::ReadyToRestart { .. } => {
+                if ui.button("  Restart now  ").clicked() {
+                    updater.restart_requested = true;
+                }
+            }
+            _ => {}
+        }
+    });
+
+    if let Some(info) = start_download {
+        updater.download_and_install(runtime, ui.ctx(), info);
+    }
+}
+
 // ── Settings Window ────────────────────────────────────────────────────
 
-fn show_settings_window(ctx: &egui::Context, state: &mut BrowserState) {
+fn show_settings_window(
+    ctx: &egui::Context,
+    state: &mut BrowserState,
+    runtime: &tokio::runtime::Runtime,
+    updater: &mut update::Updater,
+) {
     let mut open = state.show_settings;
 
     egui::Window::new("\u{2699} Settings")
@@ -1769,7 +1929,19 @@ fn show_settings_window(ctx: &egui::Context, state: &mut BrowserState) {
                         "Connect to last session on launch",
                     );
                     ui.end_row();
+
+                    ui.label("Updates:");
+                    ui.checkbox(
+                        &mut state.settings_draft.check_updates_on_launch,
+                        "Check for a new release on launch",
+                    );
+                    ui.end_row();
                 });
+
+            ui.add_space(12.0);
+            ui.separator();
+            ui.add_space(8.0);
+            render_update_section(ui, runtime, updater);
 
             ui.add_space(12.0);
 

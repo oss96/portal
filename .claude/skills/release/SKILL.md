@@ -59,6 +59,14 @@ Report the printed release URL to the user.
   bash .claude/skills/release/release.sh X.Y.Z --publish-only
   ```
 
+## What the in-app updater expects
+
+`src/update.rs` reads `/releases/latest` from this repository, so a release is only
+picked up when the tag is bare `X.Y.Z`, the release is neither a draft nor a
+prerelease, and the attached binary is named exactly `portal.exe`. The script
+already satisfies all three; keep it that way when changing it. The repository is
+public so the updater needs no credentials.
+
 ## Conventions
 
 - One release entry exists at a time. Older entries are deleted, tags accumulate.

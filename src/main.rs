@@ -4,6 +4,7 @@ mod app;
 mod fs;
 mod ssh;
 mod transfer;
+mod update;
 
 use anyhow::Result;
 use clap::Parser;
