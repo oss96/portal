@@ -72,6 +72,7 @@ fn main() -> Result<()> {
         native_options,
         Box::new(move |cc| {
             setup_fonts(&cc.egui_ctx);
+            setup_style(&cc.egui_ctx);
             Ok(Box::new(portal_app))
         }),
     )
@@ -91,6 +92,17 @@ fn load_icon() -> egui::IconData {
         width: w,
         height: h,
     }
+}
+
+/// Labels are text-selectable by default in egui, which gives every filename
+/// in the file panes its own click-and-drag hit area and an I-beam cursor.
+/// That label swallows the press, so a row only registers a click when the
+/// pointer lands in a gap between text. This is a file manager, not a text
+/// viewer: turn text selection off so rows take the whole click.
+fn setup_style(ctx: &egui::Context) {
+    ctx.all_styles_mut(|style| {
+        style.interaction.selectable_labels = false;
+    });
 }
 
 fn setup_fonts(ctx: &egui::Context) {
