@@ -12,7 +12,7 @@ impl client::Handler for Handler {
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &keys::PublicKey,
+        _server_public_key: &keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
         // Accept all server keys (TODO: verify against known_hosts)
         Ok(true)
