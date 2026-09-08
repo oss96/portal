@@ -1290,6 +1290,12 @@ fn show_browser_view(
                                 state.show_settings = true;
                             }
                         }
+                        update::UpdateStatus::Downloading {
+                            received, total, ..
+                        } => {
+                            let percent = if total > 0 { received * 100 / total } else { 0 };
+                            ui.weak(format!("\u{2B07} Updating {}%", percent));
+                        }
                         update::UpdateStatus::ReadyToRestart { version } => {
                             if ui
                                 .button(format!("\u{27F3} Restart for {}", version))
