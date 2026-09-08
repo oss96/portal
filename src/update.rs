@@ -16,7 +16,10 @@ use tokio::io::AsyncWriteExt;
 const RELEASE_HOST: &str = "git.ossalali.com";
 const LATEST_RELEASE_API: &str = "https://git.ossalali.com/api/v1/repos/oss/Portal/releases/latest";
 const ASSET_NAME: &str = "portal.exe";
-const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Applies to the whole metadata request, which is small.
+const API_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// A download gets no overall deadline; it is cut off only when it stalls.
+const STALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -71,7 +74,10 @@ impl Updater {
     }
 
     pub fn status(&self) -> UpdateStatus {
-        self.status.lock().map(|s| s.clone()).unwrap_or(UpdateStatus::Idle)
+        self.status
+            .lock()
+            .map(|s| s.clone())
+            .unwrap_or(UpdateStatus::Idle)
     }
 
     pub fn is_busy(&self) -> bool {
@@ -162,10 +168,7 @@ impl Updater {
 
     /// Start the (already swapped) executable again. Called on the way out.
     pub fn relaunch(&self) -> Result<()> {
-        let exe = self
-            .exe_path
-            .as_ref()
-            .context("executable path unknown")?;
+        let exe = self.exe_path.as_ref().context("executable path unknown")?;
         std::process::Command::new(exe)
             .args(std::env::args_os().skip(1))
             .spawn()
@@ -222,10 +225,24 @@ struct Asset {
     size: u64,
 }
 
-fn http_client() -> Result<reqwest::Client> {
+fn client_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .user_agent(format!("Portal/{CURRENT_VERSION}"))
-        .timeout(REQUEST_TIMEOUT)
+        .connect_timeout(API_TIMEOUT)
+}
+
+fn http_client() -> Result<reqwest::Client> {
+    client_builder()
+        .timeout(API_TIMEOUT)
+        .build()
+        .context("failed to build HTTP client")
+}
+
+/// A client for the binary itself. A total timeout would abort a large download
+/// on a slow line, so only a stalled transfer ends it.
+fn download_client() -> Result<reqwest::Client> {
+    client_builder()
+        .read_timeout(STALL_TIMEOUT)
         .build()
         .context("failed to build HTTP client")
 }
@@ -306,13 +323,9 @@ fn sibling(exe: &Path, suffix: &str) -> PathBuf {
 }
 
 /// Stream the asset to `<exe>.new`, reporting bytes received, and verify its size.
-async fn download(
-    info: &ReleaseInfo,
-    exe: &Path,
-    on_progress: impl Fn(u64),
-) -> Result<PathBuf> {
+async fn download(info: &ReleaseInfo, exe: &Path, on_progress: impl Fn(u64)) -> Result<PathBuf> {
     let target = sibling(exe, ".new");
-    let client = http_client()?;
+    let client = download_client()?;
     let mut response = client
         .get(&info.download_url)
         .send()
@@ -346,7 +359,11 @@ async fn download(
 
     if received != info.size {
         let _ = tokio::fs::remove_file(&target).await;
-        bail!("download is incomplete: {} of {} bytes", received, info.size);
+        bail!(
+            "download is incomplete: {} of {} bytes",
+            received,
+            info.size
+        );
     }
     if !starts_with_pe_header(&target).await {
         let _ = tokio::fs::remove_file(&target).await;
@@ -368,8 +385,7 @@ async fn starts_with_pe_header(path: &Path) -> bool {
 fn install(exe: &Path, new_file: &Path) -> Result<()> {
     let old = sibling(exe, ".old");
     let _ = std::fs::remove_file(&old);
-    std::fs::rename(exe, &old)
-        .with_context(|| format!("cannot move {} aside", exe.display()))?;
+    std::fs::rename(exe, &old).with_context(|| format!("cannot move {} aside", exe.display()))?;
     if let Err(e) = std::fs::rename(new_file, exe) {
         // Put the running binary back so the install stays where it was.
         let _ = std::fs::rename(&old, exe);
@@ -508,6 +524,32 @@ mod tests {
         assert!(info.size > 0);
     }
 
+    /// The app spawns checks on a multi-threaded runtime and reads the outcome
+    /// from the UI thread; this covers that round trip as the app performs it.
+    #[test]
+    #[ignore = "requires network access to git.ossalali.com"]
+    fn reports_a_check_back_to_the_ui_thread() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let ctx = eframe::egui::Context::default();
+        let updater = Updater::new();
+        updater.check(&runtime, &ctx);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            match updater.status() {
+                UpdateStatus::Checking => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the check never reported back"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                UpdateStatus::UpToDate | UpdateStatus::Available(_) => break,
+                other => panic!("unexpected status: {other:?}"),
+            }
+        }
+    }
+
     /// Exercises the real download and the rename swap in a scratch directory.
     #[tokio::test]
     #[ignore = "requires network access to git.ossalali.com"]
@@ -548,7 +590,13 @@ mod tests {
     #[test]
     fn sibling_keeps_the_directory_and_full_name() {
         let exe = Path::new(r"C:\Tools\portal.exe");
-        assert_eq!(sibling(exe, ".old"), PathBuf::from(r"C:\Tools\portal.exe.old"));
-        assert_eq!(sibling(exe, ".new"), PathBuf::from(r"C:\Tools\portal.exe.new"));
+        assert_eq!(
+            sibling(exe, ".old"),
+            PathBuf::from(r"C:\Tools\portal.exe.old")
+        );
+        assert_eq!(
+            sibling(exe, ".new"),
+            PathBuf::from(r"C:\Tools\portal.exe.new")
+        );
     }
 }
