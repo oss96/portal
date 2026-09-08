@@ -41,13 +41,20 @@ portal user@host -p 2222
 
 ## Building
 
-Requires Rust 1.85+ (edition 2024).
+Requires Rust 1.95+ (edition 2024; egui 0.36 sets the floor).
 
 ```bash
 cargo build --release
 ```
 
 The binary is at `target/release/portal.exe`.
+
+## Releasing
+
+There is no CI. A release is built on the development machine and published to
+the Forgejo repository by `.claude/skills/release/release.sh`, which bumps the
+version in `Cargo.toml`, builds `portal.exe`, tags `X.Y.Z`, pushes, and uploads
+the binary to a new release. Run it with `--dry-run` first to see the plan.
 
 ## Configuration
 
