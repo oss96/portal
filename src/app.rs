@@ -503,13 +503,14 @@ impl PortalApp {
 // ── eframe::App Implementation ─────────────────────────────────────────
 
 impl eframe::App for PortalApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         if self.first_frame {
             self.first_frame = false;
             // We don't persist window position, only size — center the
             // restored size on the screen, unless launching maximized.
             if !self.window_state.maximized {
-                if let Some(cmd) = egui::ViewportCommand::center_on_screen(ctx) {
+                if let Some(cmd) = egui::ViewportCommand::center_on_screen(&ctx) {
                     ctx.send_viewport_cmd(cmd);
                 }
             }
@@ -518,7 +519,7 @@ impl eframe::App for PortalApp {
         match &mut self.view {
             View::Connect(state) => {
                 if let Some(browser) = show_connect_view(
-                    ctx,
+                    ui,
                     state,
                     &self.runtime,
                     &self.settings,
@@ -529,7 +530,7 @@ impl eframe::App for PortalApp {
             }
             View::Browser(state) => {
                 poll_transfer(state, &self.runtime);
-                show_browser_view(ctx, state, &self.runtime, &mut self.window_state);
+                show_browser_view(ui, state, &self.runtime, &mut self.window_state);
 
                 // Apply settings if saved
                 if !state.show_settings {
@@ -570,7 +571,7 @@ impl eframe::App for PortalApp {
         });
     }
 
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+    fn on_exit(&mut self) {
         save_window_state(&self.window_state);
     }
 }
@@ -733,7 +734,7 @@ fn poll_transfer(state: &mut BrowserState, runtime: &tokio::runtime::Runtime) {
 // ── Connect View ───────────────────────────────────────────────────────
 
 fn show_connect_view(
-    ctx: &egui::Context,
+    ui: &mut egui::Ui,
     state: &mut ConnectState,
     runtime: &tokio::runtime::Runtime,
     settings: &AppSettings,
@@ -741,7 +742,7 @@ fn show_connect_view(
 ) -> Option<BrowserState> {
     let mut result = None;
 
-    egui::CentralPanel::default().show(ctx, |ui| {
+    egui::CentralPanel::default().show(ui, |ui| {
         ui.vertical_centered(|ui| {
             ui.add_space(40.0);
             ui.heading("Portal");
@@ -915,11 +916,12 @@ fn show_connect_view(
 // ── Browser View ───────────────────────────────────────────────────────
 
 fn show_browser_view(
-    ctx: &egui::Context,
+    ui: &mut egui::Ui,
     state: &mut BrowserState,
     runtime: &tokio::runtime::Runtime,
     window_state: &mut WindowState,
 ) {
+    let ctx = ui.ctx().clone();
     ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!(
         "Portal \u{2014} {}",
         state.connection_label
@@ -937,33 +939,33 @@ fn show_browser_view(
 
     // Settings window (floating)
     if state.show_settings {
-        show_settings_window(ctx, state);
+        show_settings_window(&ctx, state);
     }
 
     // Delete confirmation dialog
     if state.confirm_delete.is_some() {
-        show_delete_confirm(ctx, state, runtime);
+        show_delete_confirm(&ctx, state, runtime);
     }
 
     // New folder dialog
     if state.new_folder.is_some() {
-        show_new_folder_dialog(ctx, state, runtime);
+        show_new_folder_dialog(&ctx, state, runtime);
     }
 
     // Merge folders dialog
     if state.merge_folders.is_some() {
-        show_merge_dialog(ctx, state, runtime);
+        show_merge_dialog(&ctx, state, runtime);
     }
 
     // Permissions dialog
     if state.chmod_dialog.is_some() {
-        show_chmod_dialog(ctx, state, runtime);
+        show_chmod_dialog(&ctx, state, runtime);
     }
 
     // Bottom panel
-    egui::TopBottomPanel::bottom("bottom_panel")
-        .min_height(28.0)
-        .show(ctx, |ui| {
+    egui::Panel::bottom("bottom_panel")
+        .min_size(28.0)
+        .show(ui, |ui| {
             ui.horizontal(|ui| {
                 if ui
                     .add_enabled(!is_transferring, egui::Button::new(" \u{2B06} Upload "))
@@ -1285,22 +1287,22 @@ fn show_browser_view(
 
     // Right panel: transfers sidebar (toggleable)
     if state.show_transfers {
-        show_transfers_panel(ctx, state, window_state);
+        show_transfers_panel(ui, state, window_state);
     }
 
     // Left panel: local files
     let local_default = window_state.local_panel_width.unwrap_or_else(|| {
         if state.show_host {
-            ctx.screen_rect().width() / 3.0 - 10.0
+            ctx.content_rect().width() / 3.0 - 10.0
         } else {
-            ctx.screen_rect().width() / 2.0 - 10.0
+            ctx.content_rect().width() / 2.0 - 10.0
         }
     });
-    let local_response = egui::SidePanel::left("local_panel")
-        .default_width(local_default)
-        .min_width(220.0)
+    let local_response = egui::Panel::left("local_panel")
+        .default_size(local_default)
+        .min_size(220.0)
         .resizable(true)
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             let header_action = render_pane_header(
                 ui,
                 "Local",
@@ -1339,12 +1341,12 @@ fn show_browser_view(
     if state.show_host {
         let host_default = window_state
             .host_panel_width
-            .unwrap_or_else(|| ctx.screen_rect().width() / 3.0 - 10.0);
-        let host_response = egui::SidePanel::right("host_panel")
-            .default_width(host_default)
-            .min_width(220.0)
+            .unwrap_or_else(|| ctx.content_rect().width() / 3.0 - 10.0);
+        let host_response = egui::Panel::right("host_panel")
+            .default_size(host_default)
+            .min_size(220.0)
             .resizable(true)
-            .show(ctx, |ui| {
+            .show(ui, |ui| {
                 let header_action = render_pane_header(
                     ui,
                     "Host",
@@ -1394,7 +1396,7 @@ fn show_browser_view(
     }
 
     // Central panel: remote files
-    let remote_response = egui::CentralPanel::default().show(ctx, |ui| {
+    let remote_response = egui::CentralPanel::default().show(ui, |ui| {
         let header_action = render_pane_header(
             ui,
             "Remote",
@@ -1427,16 +1429,16 @@ fn show_browser_view(
 // ── Transfers Sidebar ──────────────────────────────────────────────────
 
 fn show_transfers_panel(
-    ctx: &egui::Context,
+    ui: &mut egui::Ui,
     state: &mut BrowserState,
     window_state: &mut WindowState,
 ) {
-    let response = egui::SidePanel::right("transfers_panel")
-        .default_width(window_state.transfers_panel_width.unwrap_or(360.0))
-        .min_width(280.0)
-        .max_width(520.0)
+    let response = egui::Panel::right("transfers_panel")
+        .default_size(window_state.transfers_panel_width.unwrap_or(360.0))
+        .min_size(280.0)
+        .max_size(520.0)
         .resizable(true)
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             // Snapshot live (active + queued) tasks from the current batch.
             // Finalized tasks live in transfer_history (moved over at batch end).
             let live_tasks: Vec<TransferTask>;
