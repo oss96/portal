@@ -49,6 +49,19 @@ cargo build --release
 
 The binary is at `target/release/portal.exe`.
 
+## Testing
+
+```bash
+cargo test                    # offline unit tests
+cargo test -- --ignored       # tests that talk to the live release feed
+cargo run --features shots    # render the UI offscreen to target/shots/
+```
+
+The screenshot harness (`src/app/shots.rs`) runs the egui pass in-process and
+rasterises it on a CPU adapter, so it opens no window and needs no GPU. The
+browser view needs a live SFTP session, so only the connect view, a file pane,
+the updates section and the transfer rows are captured.
+
 ## Releasing
 
 There is no CI. A release is built on the development machine and published to

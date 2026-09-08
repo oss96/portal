@@ -17,6 +17,11 @@ ssh2-config = "0.8"
 tokio = { version = "1", features = ["full"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls"] }
+egui_kittest = { version = "0.36.1", default-features = false, features = ["wgpu"], optional = true }
 
 [build-dependencies]
 winresource = "0.1"
+
+[features]
+# The offscreen screenshot harness: `cargo run --features shots`.
+shots = ["dep:egui_kittest"]

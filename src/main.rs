@@ -1,4 +1,5 @@
-#![windows_subsystem = "windows"]
+// The screenshot harness prints its progress, so it keeps a console.
+#![cfg_attr(not(feature = "shots"), windows_subsystem = "windows")]
 
 mod app;
 mod fs;
@@ -22,7 +23,16 @@ struct Cli {
     port: u16,
 }
 
+// With the harness enabled the capture returns before the GUI path runs.
+#[cfg_attr(feature = "shots", allow(unreachable_code))]
 fn main() -> Result<()> {
+    #[cfg(feature = "shots")]
+    {
+        let dir = std::path::PathBuf::from("target/shots");
+        app::shots::capture(&dir).map_err(|e| anyhow::anyhow!(e))?;
+        return Ok(());
+    }
+
     let cli = Cli::parse();
     let runtime = tokio::runtime::Runtime::new()?;
 

@@ -1,3 +1,6 @@
+#[cfg(feature = "shots")]
+pub mod shots;
+
 use crate::{fs, ssh, transfer, update};
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
