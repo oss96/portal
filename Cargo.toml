@@ -7,17 +7,17 @@ edition = "2024"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 dirs = "7"
-eframe = "0.36"
-egui_extras = "0.36"
+eframe = "0.37"
+egui_extras = "0.37"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 russh = { version = "0.64", default-features = false, features = ["ring", "flate2"] }
 russh-sftp = "3.0"
-ssh2-config = "0.8"
+ssh2-config = "0.9"
 tokio = { version = "1", features = ["full"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls"] }
-egui_kittest = { version = "0.36.1", default-features = false, features = ["wgpu"], optional = true }
+egui_kittest = { version = "0.37.0", default-features = false, features = ["wgpu"], optional = true }
 
 [build-dependencies]
 winresource = "0.1"
