@@ -1,13 +1,56 @@
-﻿using System.Configuration;
-using System.Data;
-using System.Windows;
+﻿using System.Windows;
+using Portal.Core.Settings;
+using Portal.Services;
+using Portal.ViewModels;
 
 namespace Portal;
 
-/// <summary>
-/// Interaction logic for App.xaml
-/// </summary>
+/// <summary>Starts Portal: cleans up after an update, loads settings, opens the window and connects if asked to.</summary>
 public partial class App : Application
 {
+    /// <summary>Switches between light, dark and the Windows setting.</summary>
+    public static void ApplyTheme(ThemeChoice theme) => Current.ThemeMode = theme switch
+    {
+        ThemeChoice.Light => ThemeMode.Light,
+        ThemeChoice.Dark => ThemeMode.Dark,
+        _ => ThemeMode.System,
+    };
+
+    /// <inheritdoc />
+    protected override async void OnStartup(StartupEventArgs e)
+    {
+        base.OnStartup(e);
+        Updater.CleanupAfterUpdate();
+        var (target, port) = CommandLine.Parse(e.Args);
+        var store = SettingsStore.Default;
+        var main = new MainViewModel(store);
+        ApplyTheme(main.Preferences.Theme);
+        var window = new MainWindow(main, store);
+        MainWindow = window;
+        window.Show();
+        await main.StartAsync(target, port);
+    }
 }
 
+/// <summary>Reads <c>portal [user@host] [-p port]</c>.</summary>
+public static class CommandLine
+{
+    /// <summary>Returns the connection target and port, either of which may be absent.</summary>
+    public static (string? Target, int? Port) Parse(IReadOnlyList<string> args)
+    {
+        string? target = null;
+        int? port = null;
+        for (var i = 0; i < args.Count; i++)
+        {
+            var a = args[i];
+            if ((a is "-p" or "--port") && i + 1 < args.Count && int.TryParse(args[i + 1], out var p))
+            {
+                port = p;
+                i++;
+            }
+            else if (a.StartsWith("--port=", StringComparison.Ordinal) && int.TryParse(a[7..], out var q)) port = q;
+            else if (!a.StartsWith('-') && target is null) target = a;
+        }
+        return (target, port);
+    }
+}

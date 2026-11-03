@@ -1,0 +1,298 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:vm="clr-namespace:Portal.ViewModels"
+                    xmlns:tr="clr-namespace:Portal.Core.Transfers;assembly=Portal.Core"
+                    xmlns:cs="clr-namespace:Portal.Core.Settings;assembly=Portal.Core"
+                    x:Class="Portal.Views.DialogTemplates">
+
+    <Style x:Key="DialogBody" TargetType="StackPanel">
+        <Setter Property="Margin" Value="24,24,24,20" />
+    </Style>
+    <Style x:Key="DialogFooter" TargetType="Border">
+        <Setter Property="Background" Value="{DynamicResource LayerFillColorDefaultBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource DividerStrokeColorDefaultBrush}" />
+        <Setter Property="BorderThickness" Value="0,1,0,0" />
+        <Setter Property="CornerRadius" Value="0,0,8,8" />
+        <Setter Property="Padding" Value="24" />
+    </Style>
+    <Style x:Key="ChoiceButton" TargetType="Button" BasedOn="{StaticResource SubtleButton}">
+        <Setter Property="Padding" Value="12,10" />
+        <Setter Property="Margin" Value="0,0,0,8" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Background" Value="{DynamicResource ControlFillColorDefaultBrush}" />
+    </Style>
+
+    <DataTemplate DataType="{x:Type vm:DeleteDialogViewModel}">
+        <StackPanel>
+            <StackPanel Style="{StaticResource DialogBody}">
+                <TextBlock Text="{Binding Title}" Style="{StaticResource Subtitle}" Margin="0,0,0,12" />
+                <TextBlock Text="{Binding Message}" TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,0,0,12" />
+                <Border BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="4" MaxHeight="160">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <ItemsControl ItemsSource="{Binding Entries}" Margin="0,4">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="{x:Type vm:EntryViewModel}">
+                                    <Grid Margin="12,4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="24" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Style="{StaticResource Icon}" Text="{Binding Glyph}" FontSize="14" HorizontalAlignment="Left" />
+                                        <TextBlock Grid.Column="1" Text="{Binding Name}" FontSize="12" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                                        <TextBlock Grid.Column="2" Text="{Binding SizeText}" Style="{StaticResource Faint}" Margin="12,0,0,0" VerticalAlignment="Center" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Border>
+            </StackPanel>
+            <Border Style="{StaticResource DialogFooter}">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="Cancel" Command="{Binding CancelCommand}" MinWidth="120" Margin="8,0,0,0" IsCancel="True" />
+                    <Button Content="{Binding ConfirmText}" Command="{Binding ConfirmCommand}" MinWidth="120" Margin="8,0,0,0" x:Name="Confirm" IsDefault="True" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+        <DataTemplate.Triggers>
+            <DataTrigger Binding="{Binding IsRemote}" Value="True">
+                <Setter TargetName="Confirm" Property="Background" Value="{DynamicResource SystemFillColorCriticalBrush}" />
+                <Setter TargetName="Confirm" Property="Foreground" Value="White" />
+            </DataTrigger>
+        </DataTemplate.Triggers>
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type vm:ConflictDialogViewModel}">
+        <StackPanel>
+            <StackPanel Style="{StaticResource DialogBody}">
+                <TextBlock Text="{Binding Title}" Style="{StaticResource Subtitle}" Margin="0,0,0,12" />
+                <UniformGrid Columns="2" Margin="0,0,0,12">
+                    <Border Style="{StaticResource Card}" Padding="12,8" Margin="0,0,4,0" CornerRadius="4">
+                        <StackPanel>
+                            <TextBlock Text="{Binding IncomingLabel}" FontWeight="SemiBold" FontSize="12" />
+                            <TextBlock Text="{Binding IncomingDetail}" Style="{StaticResource Caption}" />
+                        </StackPanel>
+                    </Border>
+                    <Border Style="{StaticResource Card}" Padding="12,8" Margin="4,0,0,0" CornerRadius="4">
+                        <StackPanel>
+                            <TextBlock Text="{Binding ExistingLabel}" FontWeight="SemiBold" FontSize="12" />
+                            <TextBlock Text="{Binding ExistingDetail}" Style="{StaticResource Caption}" />
+                        </StackPanel>
+                    </Border>
+                </UniformGrid>
+                <Button Style="{StaticResource ChoiceButton}" Command="{Binding ChooseCommand}" CommandParameter="{x:Static tr:ConflictChoice.Replace}">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="28" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Style="{StaticResource Icon}" Text="&#xE895;" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="0,2,0,0" Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}" />
+                        <StackPanel Grid.Column="1">
+                            <TextBlock Text="{Binding ReplaceText}" />
+                            <TextBlock Text="{Binding ReplaceHint}" Style="{StaticResource Caption}" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Grid>
+                </Button>
+                <Button Style="{StaticResource ChoiceButton}" Command="{Binding ChooseCommand}" CommandParameter="{x:Static tr:ConflictChoice.KeepBoth}">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="28" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Style="{StaticResource Icon}" Text="&#xE8C8;" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="0,2,0,0" Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}" />
+                        <StackPanel Grid.Column="1">
+                            <TextBlock Text="Keep both" />
+                            <TextBlock Text="{Binding KeepBothHint}" Style="{StaticResource Caption}" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Grid>
+                </Button>
+                <Button Style="{StaticResource ChoiceButton}" Command="{Binding ChooseCommand}" CommandParameter="{x:Static tr:ConflictChoice.Skip}" Margin="0">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="28" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Style="{StaticResource Icon}" Text="&#xE72A;" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="0,2,0,0" Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}" />
+                        <StackPanel Grid.Column="1">
+                            <TextBlock Text="Skip this one" />
+                            <TextBlock Text="{Binding SkipHint}" Style="{StaticResource Caption}" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </Grid>
+                </Button>
+            </StackPanel>
+            <Border Style="{StaticResource DialogFooter}">
+                <DockPanel>
+                    <Button DockPanel.Dock="Right" Content="Stop the transfer" Command="{Binding ChooseCommand}" CommandParameter="{x:Static tr:ConflictChoice.Cancel}" MinWidth="120" Margin="8,0,0,0" />
+                    <CheckBox Content="{Binding ApplyToRestText}" IsChecked="{Binding ApplyToRest}" VerticalAlignment="Center" FontSize="12"
+                              Visibility="{Binding HasMore, Converter={StaticResource Visible}}" />
+                </DockPanel>
+            </Border>
+        </StackPanel>
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type vm:PermissionsDialogViewModel}">
+        <StackPanel>
+            <StackPanel Style="{StaticResource DialogBody}">
+                <TextBlock Text="{Binding Title}" Style="{StaticResource Subtitle}" Margin="0,0,0,16" />
+                <Grid Margin="0,0,0,16">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="12" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel>
+                        <TextBlock Text="Owner" Style="{StaticResource Caption}" Margin="0,0,0,6" />
+                        <ComboBox ItemsSource="{Binding Owners}" SelectedItem="{Binding Owner}" IsEditable="True" Text="{Binding Owner, UpdateSourceTrigger=LostFocus}" AutomationProperties.Name="Owner" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="2">
+                        <TextBlock Text="Group" Style="{StaticResource Caption}" Margin="0,0,0,6" />
+                        <ComboBox ItemsSource="{Binding Groups}" SelectedItem="{Binding Group}" IsEditable="True" Text="{Binding Group, UpdateSourceTrigger=LostFocus}" AutomationProperties.Name="Group" />
+                    </StackPanel>
+                </Grid>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="64" />
+                        <ColumnDefinition Width="64" />
+                        <ColumnDefinition Width="64" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="1" Text="Read" Style="{StaticResource Faint}" HorizontalAlignment="Center" />
+                    <TextBlock Grid.Column="2" Text="Write" Style="{StaticResource Faint}" HorizontalAlignment="Center" />
+                    <TextBlock Grid.Column="3" Text="Run" Style="{StaticResource Faint}" HorizontalAlignment="Center" />
+                </Grid>
+                <ItemsControl ItemsSource="{Binding Rows}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate DataType="{x:Type vm:PermissionRow}">
+                            <Grid Height="32">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="64" />
+                                    <ColumnDefinition Width="64" />
+                                    <ColumnDefinition Width="64" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="{Binding Who}" VerticalAlignment="Center" />
+                                <CheckBox Grid.Column="1" IsChecked="{Binding Read.IsSet}" AutomationProperties.Name="{Binding Read.Label}" HorizontalAlignment="Center" MinWidth="0" />
+                                <CheckBox Grid.Column="2" IsChecked="{Binding Write.IsSet}" AutomationProperties.Name="{Binding Write.Label}" HorizontalAlignment="Center" MinWidth="0" />
+                                <CheckBox Grid.Column="3" IsChecked="{Binding Run.IsSet}" AutomationProperties.Name="{Binding Run.Label}" HorizontalAlignment="Center" MinWidth="0" />
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                    <TextBlock Text="chmod" Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="0,0,8,0" />
+                    <TextBox Text="{Binding OctalText, UpdateSourceTrigger=PropertyChanged}" Width="72" FontFamily="{StaticResource MonoFont}" AutomationProperties.Name="Octal mode" />
+                    <TextBlock Text="{Binding SymbolicText}" Style="{StaticResource Mono}" VerticalAlignment="Center" Margin="12,0,0,0" FontSize="13" />
+                </StackPanel>
+                <CheckBox Content="Apply to everything inside the selected folders" IsChecked="{Binding Recursive}" Margin="0,12,0,0"
+                          Visibility="{Binding HasFolders, Converter={StaticResource Visible}}" />
+            </StackPanel>
+            <Border Style="{StaticResource DialogFooter}">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="Cancel" Command="{Binding CancelCommand}" MinWidth="120" Margin="8,0,0,0" IsCancel="True" />
+                    <Button Content="Apply" Command="{Binding ApplyCommand}" MinWidth="120" Margin="8,0,0,0" IsDefault="True" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type vm:HostKeyDialogViewModel}">
+        <StackPanel>
+            <StackPanel Style="{StaticResource DialogBody}">
+                <TextBlock Text="{Binding Title}" Style="{StaticResource Subtitle}" Margin="0,0,0,12" />
+                <TextBlock TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,0,0,12"
+                           Text="This is the first time Portal connects to this server. Compare the fingerprint below with the one the server shows for “ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub”." />
+                <Border Style="{StaticResource Card}" CornerRadius="4" Padding="12,8" Margin="0,0,0,12">
+                    <TextBox Text="{Binding Fingerprint, Mode=OneWay}" IsReadOnly="True" BorderThickness="0" Background="Transparent" FontFamily="{StaticResource MonoFont}" FontSize="12" TextWrapping="Wrap" />
+                </Border>
+                <TextBlock Text="{Binding SaveNote}" Style="{StaticResource Caption}" TextWrapping="Wrap" />
+            </StackPanel>
+            <Border Style="{StaticResource DialogFooter}">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="Cancel" Command="{Binding CancelCommand}" MinWidth="120" Margin="8,0,0,0" IsCancel="True" />
+                    <Button Content="Trust and connect" Command="{Binding TrustCommand}" Style="{DynamicResource AccentButtonStyle}" MinWidth="120" Margin="8,0,0,0" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type vm:SecretDialogViewModel}">
+        <StackPanel>
+            <StackPanel Style="{StaticResource DialogBody}">
+                <TextBlock Text="{Binding Title}" Style="{StaticResource Subtitle}" Margin="0,0,0,12" />
+                <TextBlock Text="{Binding Message}" TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}" Margin="0,0,0,16" />
+                <TextBlock Text="{Binding Label}" Style="{StaticResource Caption}" Margin="0,0,0,6" />
+                <PasswordBox PasswordChanged="OnSecretChanged" Loaded="OnSecretLoaded" AutomationProperties.Name="{Binding Label}" />
+                <TextBlock Text="That didn’t work. Try again." Foreground="{DynamicResource SystemFillColorCriticalBrush}" FontSize="12" Margin="0,8,0,0"
+                           Visibility="{Binding IsRetry, Converter={StaticResource Visible}}" />
+            </StackPanel>
+            <Border Style="{StaticResource DialogFooter}">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="Cancel" Command="{Binding CancelCommand}" MinWidth="120" Margin="8,0,0,0" IsCancel="True" />
+                    <Button Content="Continue" Command="{Binding SubmitCommand}" Style="{DynamicResource AccentButtonStyle}" MinWidth="120" Margin="8,0,0,0" IsDefault="True" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type vm:MessageDialogViewModel}">
+        <StackPanel>
+            <StackPanel Style="{StaticResource DialogBody}">
+                <TextBlock Text="{Binding Title}" Style="{StaticResource Subtitle}" Margin="0,0,0,12" />
+                <TextBlock Text="{Binding Message}" TextWrapping="Wrap" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+            </StackPanel>
+            <Border Style="{StaticResource DialogFooter}">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="{Binding CancelText}" Command="{Binding CancelCommand}" MinWidth="120" Margin="8,0,0,0" IsCancel="True"
+                            Visibility="{Binding CancelText, Converter={StaticResource VisibleIfSet}}" />
+                    <Button Content="{Binding ConfirmText}" Command="{Binding ConfirmCommand}" Style="{DynamicResource AccentButtonStyle}" MinWidth="120" Margin="8,0,0,0" IsDefault="True" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type vm:SettingsDialogViewModel}">
+        <StackPanel Width="520">
+            <ScrollViewer MaxHeight="560" VerticalScrollBarVisibility="Auto">
+                <StackPanel Style="{StaticResource DialogBody}">
+                    <TextBlock Text="Settings" Style="{StaticResource Subtitle}" Margin="0,0,0,16" />
+                    <TextBlock Text="Theme" Style="{StaticResource Caption}" Margin="0,0,0,6" />
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                        <RadioButton Content="Use Windows setting" IsChecked="{Binding IsSystemTheme}" Margin="0,0,16,0" GroupName="Theme" />
+                        <RadioButton Content="Light" IsChecked="{Binding IsLightTheme}" Margin="0,0,16,0" GroupName="Theme" />
+                        <RadioButton Content="Dark" IsChecked="{Binding IsDarkTheme}" GroupName="Theme" />
+                    </StackPanel>
+                    <TextBlock Text="Transfers at the same time" Style="{StaticResource Caption}" Margin="0,0,0,6" />
+                    <ComboBox ItemsSource="{Binding ParallelOptions}" SelectedItem="{Binding Parallel}" Width="120" HorizontalAlignment="Left" AutomationProperties.Name="Transfers at the same time" />
+                    <TextBlock Text="More helps with many small files; one is fastest for a single big file." Style="{StaticResource Faint}" Margin="0,4,0,16" TextWrapping="Wrap" />
+                    <TextBlock Text="When a file already exists" Style="{StaticResource Caption}" Margin="0,0,0,6" />
+                    <ComboBox ItemsSource="{Binding ConflictOptions}" SelectedValue="{Binding Conflicts}" SelectedValuePath="Value" DisplayMemberPath="Label" Width="200" HorizontalAlignment="Left" Margin="0,0,0,16"
+                              AutomationProperties.Name="When a file already exists" />
+                    <CheckBox Content="Reconnect to the last server when Portal starts" IsChecked="{Binding Reconnect}" Margin="0,0,0,16" />
+                    <Rectangle Height="1" Fill="{DynamicResource DividerStrokeColorDefaultBrush}" Margin="0,0,0,16" />
+                    <TextBlock Text="Updates" Style="{StaticResource Caption}" Margin="0,0,0,6" />
+                    <DockPanel DataContext="{Binding Updates}" Margin="0,0,0,8" LastChildFill="True">
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                            <Button Content="Check now" Command="{Binding CheckNowCommand}" Visibility="{Binding CanCheck, Converter={StaticResource Visible}}" />
+                            <Button Content="{Binding InstallText}" Command="{Binding InstallCommand}" Style="{DynamicResource AccentButtonStyle}" Margin="8,0,0,0"
+                                    Visibility="{Binding IsAvailable, Converter={StaticResource Visible}}" />
+                            <Button Content="Restart now" Command="{Binding RestartCommand}" Style="{DynamicResource AccentButtonStyle}" Margin="8,0,0,0"
+                                    Visibility="{Binding IsReady, Converter={StaticResource Visible}}" />
+                        </StackPanel>
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="{Binding StatusText}" TextWrapping="Wrap" />
+                            <ProgressBar Style="{StaticResource ProgressThin}" Value="{Binding Progress}" Margin="0,6,12,0" Visibility="{Binding IsDownloading, Converter={StaticResource Visible}}" />
+                        </StackPanel>
+                    </DockPanel>
+                    <CheckBox Content="Check for updates when Portal starts" IsChecked="{Binding CheckOnLaunch}" />
+                    <TextBlock Text="Changes apply right away." Style="{StaticResource Faint}" Margin="0,16,0,0" />
+                </StackPanel>
+            </ScrollViewer>
+            <Border Style="{StaticResource DialogFooter}">
+                <Button Content="Done" Command="{Binding DoneCommand}" Style="{DynamicResource AccentButtonStyle}" MinWidth="120" HorizontalAlignment="Right" IsDefault="True" />
+            </Border>
+        </StackPanel>
+    </DataTemplate>
+
+</ResourceDictionary>
