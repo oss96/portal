@@ -17,6 +17,9 @@ public interface IServerFileSystem : IFileSystem
     /// <summary>True when the account can run commands; SFTP-only accounts can't search, measure disks or copy on the server.</summary>
     bool CanRunCommands { get; }
 
+    /// <summary>Why commands can't run, for the user, or null when they can.</summary>
+    string? NoCommandsReason { get; }
+
     /// <summary>Turns permission bits on and off and/or changes the owner, optionally for everything inside folders too.</summary>
     Task SetPermissionsAsync(IReadOnlyList<string> paths, PermissionDelta? mode, string? owner, string? group, bool recursive, CancellationToken ct);
 

@@ -193,6 +193,76 @@ public sealed class SshIntegrationTests(SshServerFixture server) : IDisposable
     }
 
     [SshFact]
+    public async Task Replacing_onto_a_symlink_never_writes_through_it_and_renames_never_overwrite()
+    {
+        await using (var session = await SshConnector.ConnectAsync(Profile(), new Prompts(), new Progress<ConnectStage>(), default))
+        {
+            var fs = session.Files;
+            var home = fs.HomeDirectory;
+            await server.Exec($"cd {home} && rm -rf r && mkdir -p r/outside r/folder && echo shared > r/outside/shared.txt && ln -s ../outside/shared.txt r/folder/dest.txt && echo mine > r/folder/a.txt && echo theirs > r/folder/b.txt");
+            var folder = RemotePath.Combine(home, "r/folder");
+            var local = Path.Combine(_local, "dest.txt");
+            await File.WriteAllTextAsync(local, "uploaded");
+            await RunAsync(new TransferEngine(() => 1), new LocalFileSystem(), [(await new LocalFileSystem().StatAsync(local, default))!], session.TransferFiles, folder, ConflictChoice.Replace);
+            Assert.Equal("shared", (await server.Exec($"cat {home}/r/outside/shared.txt")).Trim());
+            Assert.Equal("uploaded", (await server.Exec($"cat {home}/r/folder/dest.txt")).Trim());
+
+            await Assert.ThrowsAsync<RemoteCommandException>(() => fs.RenameAsync(RemotePath.Combine(folder, "a.txt"), RemotePath.Combine(folder, "b.txt"), overwrite: false, default));
+            Assert.Equal("theirs", (await server.Exec($"cat {home}/r/folder/b.txt")).Trim());
+            await fs.DeleteAsync([RemotePath.Combine(home, "r")], default);
+        }
+
+        var sftpOnly = new ServerProfile { Name = "SFTP only", Host = "127.0.0.1", Port = server.SftpOnlyPort, User = server.User };
+        await using (var session = await SshConnector.ConnectAsync(sftpOnly, new Prompts(), new Progress<ConnectStage>(), default))
+        {
+            var home = session.Files.HomeDirectory;
+            await server.ExecSftpOnly($"cd {home} && rm -rf r && mkdir -p r/outside r/folder && echo shared > r/outside/shared.txt && ln -s ../outside/shared.txt r/folder/dest.txt");
+            var local = Path.Combine(_local, "dest.txt");
+            await File.WriteAllTextAsync(local, "uploaded");
+            var engine = new TransferEngine(() => 1);
+            var finished = new TaskCompletionSource<IReadOnlyList<TransferItem>>();
+            engine.BatchFinished += (_, items) => finished.TrySetResult(items);
+            await engine.EnqueueAsync(new LocalFileSystem(), [(await new LocalFileSystem().StatAsync(local, default))!], session.TransferFiles, RemotePath.Combine(home, "r/folder"),
+                ConflictPolicy.Replace, _ => throw new InvalidOperationException(), default);
+            var item = Assert.Single(await finished.Task.WaitAsync(TimeSpan.FromSeconds(60)));
+            Assert.Equal(TransferStatus.Failed, item.Status);
+            Assert.Contains("symbolic link", item.Error);
+            Assert.Equal("shared", (await server.ExecSftpOnly($"cat {home}/r/outside/shared.txt")).Trim());
+            await server.ExecSftpOnly($"rm -rf {home}/r");
+        }
+    }
+
+    [SshFact]
+    public async Task A_known_server_that_hangs_up_is_not_reported_as_a_changed_identity()
+    {
+        using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        var serve = Task.Run(async () =>
+        {
+            using var client = await listener.AcceptTcpClientAsync();
+            var stream = client.GetStream();
+            await stream.WriteAsync("SSH-2.0-OpenSSH_9.9\r\n"u8.ToArray());
+            await Task.Delay(300);
+        });
+        var path = Path.Combine(server.SshDirectory, "known_hosts");
+        var ed = Convert.ToBase64String(new byte[] { 0, 0, 0, 11 }.Concat("ssh-ed25519"u8.ToArray()).Concat(new byte[] { 0, 0, 0, 32 }).Concat(new byte[32]).ToArray());
+        await File.WriteAllTextAsync(path, $"[127.0.0.1]:{port} ssh-ed25519 {ed}\n");
+        try
+        {
+            var profile = new ServerProfile { Name = "Flaky", Host = "127.0.0.1", Port = port, User = server.User };
+            var e = await Assert.ThrowsAnyAsync<Exception>(() => SshConnector.ConnectAsync(profile, new Prompts(), new Progress<ConnectStage>(), default));
+            Assert.IsNotType<HostKeyTypeMismatchException>(e);
+            Assert.DoesNotContain("identity", FriendlyError.ForConnect(e, "127.0.0.1", port, server.User).Title);
+        }
+        finally
+        {
+            File.Delete(path);
+            await serve;
+        }
+    }
+
+    [SshFact]
     public async Task A_server_without_the_recorded_key_type_reads_as_a_changed_identity()
     {
         var path = Path.Combine(server.SshDirectory, "known_hosts");

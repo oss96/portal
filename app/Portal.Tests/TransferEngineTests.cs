@@ -202,6 +202,20 @@ public sealed class TransferEngineTests : IDisposable
     }
 
     [Fact]
+    public async Task Case_twins_never_both_replace_the_same_local_file()
+    {
+        File.WriteAllText(Path.Combine(_local, "a.txt"), "existing");
+        _server.AddFile("/data/a.txt", "lower");
+        _server.AddFile("/data/A.txt", "upper");
+
+        var batch = await _engine.EnqueueAsync(_server, [.. (await _server.ListAsync("/data", default)).OrderBy(e => e.Name, StringComparer.Ordinal)], _pc, _local,
+            ConflictPolicy.Replace, _ => throw new InvalidOperationException("policy answers"), default);
+        await WaitAsync(batch!);
+
+        Assert.Equal(["lower", "upper"], Directory.GetFiles(_local).Select(File.ReadAllText).Order().ToList());
+    }
+
+    [Fact]
     public void Unique_name_counts_up_past_taken_names()
     {
         var taken = new HashSet<string> { "a.txt", "a (1).txt" };

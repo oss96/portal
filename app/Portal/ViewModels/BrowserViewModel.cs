@@ -102,7 +102,7 @@ public sealed partial class BrowserViewModel : ObservableObject, IDisposable
     public string ConnectionText => IsConnectionLost ? $"Connection to {ServerName} lost" : $"Connected to {ServerName} as {Session.User}";
 
     /// <summary>"tower:22 · 14 ms".</summary>
-    public string ConnectionDetail => $"{Session.HostName}{(Session.Port == 22 ? "" : ":" + Session.Port)} · {Math.Max(1, Math.Round(Session.Latency.TotalMilliseconds))} ms{(Session.Files.CanRunCommands ? "" : " · SFTP only")}";
+    public string ConnectionDetail => $"{Session.HostName}{(Session.Port == 22 ? "" : ":" + Session.Port)} · {Math.Max(1, Math.Round(Session.Latency.TotalMilliseconds))} ms{(Session.Files.CanRunCommands ? "" : " · no commands")}";
 
     /// <summary>Text of the storage section header.</summary>
     public string StorageHeader => $"Storage on {ServerName}";
@@ -137,9 +137,9 @@ public sealed partial class BrowserViewModel : ObservableObject, IDisposable
         await BuildPlacesAsync();
         _ = LoadDisksAsync();
         Remote.Focus();
-        if (!Session.Files.CanRunCommands)
-            Main.Toasts.Show(ToastKind.Info, $"{ServerName} allows file transfers only",
-                "Browsing, uploads, downloads, renames and permissions work. Search, disk space, copying on the server and changing owners need an account that can run commands.");
+        if (Session.Files.NoCommandsReason is { } reason)
+            Main.Toasts.Show(ToastKind.Info, reason,
+                "Browsing, uploads, downloads, renames and permissions work. Search, disk space, copying on the server and changing owners need commands. Symbolic links can’t be deleted, renamed, moved or replaced, because SFTP would act on what they point to.");
     }
 
     /// <summary>Reconnects before a retry when the connection dropped.</summary>
@@ -595,7 +595,7 @@ public sealed partial class BrowserViewModel : ObservableObject, IDisposable
         if (entries.Count == 0) return false;
         if (!Session.Files.CanRunCommands && !move)
         {
-            Main.Toasts.Show(ToastKind.Error, "Can’t copy on this server", "This account may only transfer files (SFTP only). Download and upload the files instead.");
+            Main.Toasts.Show(ToastKind.Error, "Can’t copy on this server", $"{Session.Files.NoCommandsReason} Download and upload the files instead.");
             return false;
         }
         var completed = false;

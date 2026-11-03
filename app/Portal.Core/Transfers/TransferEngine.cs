@@ -83,6 +83,13 @@ public sealed class TransferEngine(Func<int> maxParallel)
                 continue;
             }
             conflicts--;
+            if (planned.Any(x => names.Equals(x.Name, source.Name)))
+            {
+                var separate = UniqueName(taken, source.Name);
+                planned.Add((source, separate, false));
+                taken.Add(separate);
+                continue;
+            }
             var keepBothName = UniqueName(taken, source.Name);
             var question = new ConflictQuestion(source, current, direction, to.DisplayName, keepBothName, conflicts);
             var choice = standing;

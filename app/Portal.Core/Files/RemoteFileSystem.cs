@@ -104,17 +104,26 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
     /// <inheritdoc />
     public async Task RenameAsync(string from, string to, bool overwrite, CancellationToken ct)
     {
+        var (f, t) = (PosixShell.Quote(from), PosixShell.Quote(to));
         if (!overwrite)
         {
             if (shell.IsAvailable)
             {
-                await shell.RunCheckedAsync($"mv -- {PosixShell.Quote(from)} {PosixShell.Quote(to)}", ct).ConfigureAwait(false);
+                var exists = PosixShell.Quote($"“{RemotePath.NameOf(to)}” already exists.");
+                await shell.RunCheckedAsync($"if [ -e {t} ] || [ -L {t} ]; then echo {exists} >&2; exit 17; fi; mv -- {f} {t}", ct).ConfigureAwait(false);
                 return;
             }
             await RefuseLinkAsync(from, ct).ConfigureAwait(false);
             await sftp.RenameFileAsync(from, to, ct).ConfigureAwait(false);
             return;
         }
+        if (shell.IsAvailable)
+        {
+            var folder = PosixShell.Quote($"“{RemotePath.NameOf(to)}” is a folder, so it can’t be replaced by a file.");
+            await shell.RunCheckedAsync($"if [ -d {t} ] && [ ! -L {t} ]; then echo {folder} >&2; exit 21; fi; mv -f -- {f} {t}", ct).ConfigureAwait(false);
+            return;
+        }
+        if (await StatAsync(to, ct).ConfigureAwait(false) is not null) await RefuseLinkAsync(to, ct).ConfigureAwait(false);
         await ReplaceWithSftpAsync(from, to, ct).ConfigureAwait(false);
     }
 
@@ -149,27 +158,20 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
             await shell.RunCheckedAsync("rm -rf -- " + PosixShell.Join(paths), ct).ConfigureAwait(false);
             return;
         }
-        var plans = new List<(List<string> Files, List<string> Folders)>();
-        foreach (var p in paths) plans.Add(await PlanDeleteAsync(RemotePath.Normalize(p), ct).ConfigureAwait(false));
-        foreach (var (files, folders) in plans)
-        {
-            foreach (var f in files) await sftp.DeleteFileAsync(f, ct).ConfigureAwait(false);
-            foreach (var d in folders) await sftp.DeleteDirectoryAsync(d, ct).ConfigureAwait(false);
-        }
-    }
-
-    private async Task<(List<string> Files, List<string> Folders)> PlanDeleteAsync(string path, CancellationToken ct)
-    {
-        var parent = RemotePath.Parent(path) ?? "/";
-        var name = RemotePath.NameOf(path);
-        ISftpFile? self = null;
-        await foreach (var f in sftp.ListDirectoryAsync(parent, ct).ConfigureAwait(false))
-            if (f.Name == name) self = f;
-        if (self is null) throw new SftpPathNotFoundException($"“{path}” doesn’t exist.");
         var files = new List<string>();
         var folders = new List<string>();
-        await CollectAsync(self, files, folders, ct).ConfigureAwait(false);
-        return (files, folders);
+        foreach (var group in paths.Select(RemotePath.Normalize).GroupBy(p => RemotePath.Parent(p) ?? "/"))
+        {
+            var listing = new Dictionary<string, ISftpFile>(StringComparer.Ordinal);
+            await foreach (var f in sftp.ListDirectoryAsync(group.Key, ct).ConfigureAwait(false)) listing[f.Name] = f;
+            foreach (var path in group)
+            {
+                if (!listing.TryGetValue(RemotePath.NameOf(path), out var self)) throw new SftpPathNotFoundException($"“{path}” doesn’t exist.");
+                await CollectAsync(self, files, folders, ct).ConfigureAwait(false);
+            }
+        }
+        foreach (var f in files) await sftp.DeleteFileAsync(f, ct).ConfigureAwait(false);
+        foreach (var d in folders) await sftp.DeleteDirectoryAsync(d, ct).ConfigureAwait(false);
     }
 
     private async Task CollectAsync(ISftpFile entry, List<string> files, List<string> folders, CancellationToken ct)
@@ -257,6 +259,11 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
     /// <summary>True when the account can run commands, so search, disk usage and server-side copy work.</summary>
     public bool CanRunCommands => shell.IsAvailable;
 
+    /// <inheritdoc />
+    public string? NoCommandsReason => shell.IsAvailable ? null : shell.IsSftpOnly
+        ? $"{displayName} allows file transfers only for this account."
+        : $"Portal couldn’t open a command channel to {displayName}. Reconnect to try again.";
+
     /// <summary>Total size of a folder and everything inside it, measured on the server.</summary>
     public async Task<long> DirectorySizeAsync(string path, CancellationToken ct)
     {
@@ -311,7 +318,7 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
             return;
         }
         await RefuseLinkAsync(source, ct).ConfigureAwait(false);
-        await ReplaceWithSftpAsync(source, destination, ct).ConfigureAwait(false);
+        await RenameAsync(source, destination, overwrite: true, ct).ConfigureAwait(false);
     }
 
     private async Task<long> SumSizesAsync(string path, CancellationToken ct)

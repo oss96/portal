@@ -75,15 +75,15 @@ public static class SshConnector
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 timeout.CancelAfter(ShellProbeTimeout);
                 var r = await probe.RunAsync($"echo {ShellProbe}", timeout.Token).ConfigureAwait(false);
-                return r.Output.Trim() == ShellProbe ? probe : RemoteShell.Unavailable;
+                return r.Output.Trim() == ShellProbe ? probe : RemoteShell.SftpOnly;
             }
-            catch (Exception e) when (e is SshException or SocketException or TimeoutException && !ct.IsCancellationRequested && attempt < 2)
+            catch (Exception e) when (e is SshException or OperationCanceledException or SocketException or TimeoutException && !ct.IsCancellationRequested && attempt < 2)
             {
                 await Task.Delay(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false);
             }
             catch (Exception e) when (e is SshException or OperationCanceledException or SocketException or TimeoutException && !ct.IsCancellationRequested)
             {
-                return RemoteShell.Unavailable;
+                return RemoteShell.Unreachable;
             }
         }
     }
@@ -121,7 +121,8 @@ public static class SshConnector
                 client.Dispose();
                 throw new HostKeyChangedException(changed);
             }
-            catch (SshConnectionException) when (!verifier.SawKey && recorded.Count > 0)
+            catch (SshConnectionException e) when (!verifier.SawKey && recorded.Count > 0
+                && e.Message.StartsWith("No matching host key algorithm", StringComparison.Ordinal))
             {
                 client.Dispose();
                 throw new HostKeyTypeMismatchException(target.HostName, [.. recorded], knownHosts.Path);

@@ -17,13 +17,23 @@ public sealed class RemoteShell
     /// <summary>A shell over an open SSH client.</summary>
     public RemoteShell(SshClient client) => _client = client;
 
-    private RemoteShell() => _client = null;
+    private RemoteShell(bool sftpOnly)
+    {
+        _client = null;
+        IsSftpOnly = sftpOnly;
+    }
 
-    /// <summary>The shell of an account that may only use SFTP.</summary>
-    public static RemoteShell Unavailable { get; } = new();
+    /// <summary>The shell of an account the server limits to SFTP.</summary>
+    public static RemoteShell SftpOnly { get; } = new(sftpOnly: true);
 
-    /// <summary>False for accounts limited to SFTP, where server-side commands can't run.</summary>
+    /// <summary>The shell of an account whose command channel didn't open or answer.</summary>
+    public static RemoteShell Unreachable { get; } = new(sftpOnly: false);
+
+    /// <summary>False when server-side commands can't run.</summary>
     public bool IsAvailable => _client is not null;
+
+    /// <summary>True when the server itself limits the account to SFTP, as opposed to the channel failing.</summary>
+    public bool IsSftpOnly { get; }
 
     /// <summary>Runs a command line that the caller built with <c>PosixShell.Quote</c>.</summary>
     public async Task<CommandResult> RunAsync(string commandLine, CancellationToken ct)
@@ -54,7 +64,7 @@ public sealed class RemoteCommandException(CommandResult result)
 
 /// <summary>The account may only use SFTP, so a server-side command can't run.</summary>
 public sealed class ShellUnavailableException()
-    : NotSupportedException("This account may only transfer files (SFTP only), so Portal can’t run this on the server.");
+    : NotSupportedException("Portal can’t run commands on this server for this connection, so it can’t do this here.");
 
 /// <summary>A delete, rename or move would touch a symbolic link, which SFTP follows to its target.</summary>
 public sealed class SymlinkDeleteException(string path)

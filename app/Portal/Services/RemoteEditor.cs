@@ -22,7 +22,7 @@ public sealed class RemoteEditor(IServerSession session, ToastService toasts) : 
         await using (var target = LocalFileSystem.OpenWrite(local, append: false))
             await session.TransferFiles.ReadToAsync(file.FullPath, target, 0, new Progress<long>(), CancellationToken.None);
         File.SetLastWriteTimeUtc(local, DateTime.UtcNow);
-        Watch(local, file.FullPath);
+        Watch(local, file.FullPath, file.IsLink);
         Process.Start(new ProcessStartInfo(local) { UseShellExecute = true });
         toasts.Show(ToastKind.Info, $"Opened {file.Name}", $"Save it in the app and Portal uploads the change to {session.Profile.Name}.");
     }
@@ -35,28 +35,28 @@ public sealed class RemoteEditor(IServerSession session, ToastService toasts) : 
         foreach (var c in _pending.Values) c.Cancel();
     }
 
-    private void Watch(string local, string remote)
+    private void Watch(string local, string remote, bool isLink)
     {
         if (_watchers.Any(w => Path.Combine(w.Path, w.Filter) == local)) return;
         var watcher = new FileSystemWatcher(Path.GetDirectoryName(local)!, Path.GetFileName(local)) { NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName };
-        watcher.Changed += (_, _) => Schedule(local, remote);
-        watcher.Renamed += (_, e) => { if (e.FullPath == local) Schedule(local, remote); };
+        watcher.Changed += (_, _) => Schedule(local, remote, isLink);
+        watcher.Renamed += (_, e) => { if (e.FullPath == local) Schedule(local, remote, isLink); };
         watcher.EnableRaisingEvents = true;
         _watchers.Add(watcher);
     }
 
-    private void Schedule(string local, string remote)
+    private void Schedule(string local, string remote, bool isLink)
     {
         lock (_pending)
         {
             if (_pending.Remove(local, out var old)) old.Cancel();
             var cts = new CancellationTokenSource();
             _pending[local] = cts;
-            _ = UploadSoonAsync(local, remote, cts.Token);
+            _ = UploadSoonAsync(local, remote, isLink, cts.Token);
         }
     }
 
-    private async Task UploadSoonAsync(string local, string remote, CancellationToken ct)
+    private async Task UploadSoonAsync(string local, string remote, bool isLink, CancellationToken ct)
     {
         SemaphoreSlim gate;
         lock (_pending)
@@ -76,11 +76,18 @@ public sealed class RemoteEditor(IServerSession session, ToastService toasts) : 
         {
             var fs = session.TransferFiles;
             var part = RemotePath.Combine(RemotePath.Parent(remote) ?? "/", $".{RemotePath.NameOf(remote)}.portal-part");
-            var mode = (await fs.StatAsync(remote, CancellationToken.None))?.Mode;
-            await using (var source = new FileStream(local, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            await using var source = new FileStream(local, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            if (isLink)
+            {
+                await fs.WriteFromAsync(remote, source, append: false, new Progress<long>(), CancellationToken.None);
+            }
+            else
+            {
+                var mode = (await fs.StatAsync(remote, CancellationToken.None))?.Mode;
                 await fs.WriteFromAsync(part, source, append: false, new Progress<long>(), CancellationToken.None);
-            await fs.RenameAsync(part, remote, overwrite: true, CancellationToken.None);
-            if (mode is int m) await fs.SetModeAsync(remote, m, CancellationToken.None);
+                await fs.RenameAsync(part, remote, overwrite: true, CancellationToken.None);
+                if (mode is int m) await fs.SetModeAsync(remote, m, CancellationToken.None);
+            }
             toasts.Show(ToastKind.Success, $"Saved {RemotePath.NameOf(remote)} to {session.Profile.Name}", remote);
         }
         catch (Exception e)

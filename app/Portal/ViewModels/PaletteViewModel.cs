@@ -69,7 +69,7 @@ public sealed partial class PaletteViewModel : ObservableObject
         if (value.Trim().Length < 2 || value.StartsWith('/')) return;
         if (!_browser.Session.Files.CanRunCommands)
         {
-            _found = [new PaletteItem("Searching files isn’t available on this server", Glyphs.Info, "SFTP only", () => Task.CompletedTask)];
+            _found = [new PaletteItem("Searching files isn’t available here", Glyphs.Info, _browser.Session.Files.NoCommandsReason ?? "", () => Task.CompletedTask)];
             Rebuild();
             return;
         }
