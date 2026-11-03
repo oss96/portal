@@ -8,7 +8,7 @@ using Renci.SshNet.Sftp;
 namespace Portal.Core.Files;
 
 /// <summary>A server's file system: SFTP for browsing and file data, shell commands for bulk work.</summary>
-public sealed class RemoteFileSystem(string displayName, SftpClient sftp, RemoteShell shell, AccountNames names) : IFileSystem
+public sealed class RemoteFileSystem(string displayName, SftpClient sftp, RemoteShell shell, AccountNames names) : IServerFileSystem
 {
     /// <inheritdoc />
     public string DisplayName => displayName;

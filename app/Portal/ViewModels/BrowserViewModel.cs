@@ -19,7 +19,7 @@ public sealed partial class BrowserViewModel : ObservableObject, IDisposable
     private CancellationTokenSource? _measuring;
 
     /// <summary>Builds the screen for an open session.</summary>
-    public BrowserViewModel(MainViewModel main, RemoteSession session)
+    public BrowserViewModel(MainViewModel main, IServerSession session)
     {
         Main = main;
         Session = session;
@@ -53,7 +53,7 @@ public sealed partial class BrowserViewModel : ObservableObject, IDisposable
     public MainViewModel Main { get; }
 
     /// <summary>The open connection.</summary>
-    public RemoteSession Session { get; }
+    public IServerSession Session { get; }
 
     /// <summary>The server's file list.</summary>
     public PaneViewModel Remote { get; }

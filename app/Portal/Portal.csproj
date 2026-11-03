@@ -33,4 +33,8 @@
     <Resource Include="..\..\assets\icon.png" Link="Assets\icon.png" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Portal.Shots" />
+  </ItemGroup>
+
 </Project>

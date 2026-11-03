@@ -46,6 +46,7 @@ public sealed partial class PaneViewModel : ObservableObject
         View = (ListCollectionView)CollectionViewSource.GetDefaultView(Items);
         View.Filter = o => o is EntryViewModel e && Visible(e);
         View.CustomSort = new EntryComparer(SortKey.Name, ListSortDirection.Ascending);
+        OnPathChanged(startPath);
     }
 
     /// <summary>The file system this pane shows.</summary>

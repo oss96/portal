@@ -7,7 +7,7 @@ using Portal.Core.Files;
 namespace Portal.Services;
 
 /// <summary>Opens server files in their Windows app and uploads them back each time they are saved.</summary>
-public sealed class RemoteEditor(RemoteSession session, ToastService toasts) : IDisposable
+public sealed class RemoteEditor(IServerSession session, ToastService toasts) : IDisposable
 {
     private readonly List<FileSystemWatcher> _watchers = [];
     private readonly Dictionary<string, CancellationTokenSource> _pending = [];

@@ -45,10 +45,13 @@ public sealed partial class ServerCardViewModel(ServerProfile profile, MainViewM
     {
         get
         {
-            var when = Profile.LastConnectedUtc is { } t ? "last used " + Formatting.Date(t).ToLowerInvariant() : "not used yet";
+            var when = Profile.LastConnectedUtc is { } t ? "last used " + LowerRelative(Formatting.Date(t)) : "not used yet";
             return main.IsOpen(Profile) ? $"{Profile.Address} · connected" : $"{Profile.Address} · {when}";
         }
     }
+
+    private static string LowerRelative(string date) =>
+        date.StartsWith("Today", StringComparison.Ordinal) || date.StartsWith("Yesterday", StringComparison.Ordinal) ? char.ToLowerInvariant(date[0]) + date[1..] : date;
 
     /// <summary>Connect progress lines.</summary>
     public ObservableCollection<ConnectStepViewModel> Steps { get; } = [];

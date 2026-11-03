@@ -4,7 +4,7 @@ using Renci.SshNet;
 namespace Portal.Core.Connections;
 
 /// <summary>An open connection to one server: a browsing SFTP channel, a transfer SFTP channel and a command channel.</summary>
-public sealed class RemoteSession : IAsyncDisposable
+public sealed class RemoteSession : IServerSession
 {
     private readonly SftpClient _browse;
     private readonly SftpClient _transfer;
@@ -43,10 +43,10 @@ public sealed class RemoteSession : IAsyncDisposable
     public TimeSpan Latency { get; private set; }
 
     /// <summary>File system used for browsing and file operations.</summary>
-    public RemoteFileSystem Files { get; }
+    public IServerFileSystem Files { get; }
 
     /// <summary>File system on a separate channel, used for transfers so they don't slow browsing down.</summary>
-    public RemoteFileSystem TransferFiles { get; }
+    public IServerFileSystem TransferFiles { get; }
 
     /// <summary>True while all three channels are up.</summary>
     public bool IsConnected => _browse.IsConnected && _transfer.IsConnected && _shell.IsConnected;

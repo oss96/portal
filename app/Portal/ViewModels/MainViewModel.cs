@@ -213,7 +213,8 @@ public sealed partial class MainViewModel : ObservableObject, IConnectPrompts
     public Task<string?> AskPasswordAsync(string user, string host, bool retry) => Dialogs.ShowAsync(new SecretDialogViewModel(
         $"Sign in to {host}", $"Enter the password for {user}. Portal doesn’t store it.", "Password", retry));
 
-    private async Task OpenAsync(RemoteSession session)
+    /// <summary>Shows the browser for an open session, closing the previous one.</summary>
+    public async Task OpenAsync(IServerSession session)
     {
         if (Browser is { } old)
         {

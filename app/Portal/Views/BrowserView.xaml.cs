@@ -39,7 +39,10 @@ public partial class BrowserView : UserControl
             ApplyLayout();
         };
         PreviewKeyDown += OnKey;
+        SizeChanged += (_, _) => ApplyLayout();
     }
+
+    private const double SplitWithDetailsMinWidth = 1440;
 
     private void OnChanged(object? sender, PropertyChangedEventArgs e)
     {
@@ -52,9 +55,10 @@ public partial class BrowserView : UserControl
         LocalColumn.Width = _vm.ShowLocalPane ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
         LocalList.Visibility = _vm.ShowLocalPane ? Visibility.Visible : Visibility.Collapsed;
         PaneSplitter.Visibility = LocalList.Visibility;
-        DetailsColumn.Width = _vm.ShowDetails ? new GridLength(296) : new GridLength(0);
-        DetailsPane.Visibility = _vm.ShowDetails ? Visibility.Visible : Visibility.Collapsed;
-        RemoteList.SetCompact(_vm.ShowLocalPane && _vm.ShowDetails);
+        var details = _vm.ShowDetails && (!_vm.ShowLocalPane || ActualWidth == 0 || ActualWidth >= SplitWithDetailsMinWidth);
+        DetailsColumn.Width = details ? new GridLength(296) : new GridLength(0);
+        DetailsPane.Visibility = details ? Visibility.Visible : Visibility.Collapsed;
+        RemoteList.SetCompact(_vm.ShowLocalPane && details);
         _vm.Remote.IsActive = _vm.ActivePane == _vm.Remote;
         _vm.Local.IsActive = _vm.ActivePane == _vm.Local;
     }

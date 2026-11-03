@@ -41,7 +41,7 @@
                     Background="{DynamicResource ControlFillColorDefaultBrush}" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
                     MouseLeftButtonUp="OnCrumbsClick" ToolTip="Click to type a path (Ctrl+L)">
                 <Grid>
-                    <ScrollViewer x:Name="CrumbScroll" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled" Visibility="{Binding IsEditingPath, Converter={StaticResource Collapsed}}">
+                    <ScrollViewer x:Name="CrumbScroll" SizeChanged="OnCrumbsSized" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled" Visibility="{Binding IsEditingPath, Converter={StaticResource Collapsed}}">
                         <ItemsControl ItemsSource="{Binding Breadcrumbs}" Margin="2,0" VerticalAlignment="Center" Focusable="False">
                             <ItemsControl.ItemsPanel>
                                 <ItemsPanelTemplate>
@@ -84,10 +84,60 @@
             <DataGrid x:Name="Grid" ItemsSource="{Binding View}" AutoGenerateColumns="False" IsReadOnly="True" HeadersVisibility="Column" GridLinesVisibility="None"
                       SelectionMode="Extended" SelectionUnit="FullRow" CanUserResizeRows="False" CanUserReorderColumns="False" CanUserAddRows="False" CanUserDeleteRows="False"
                       RowHeight="32" BorderThickness="0" Background="Transparent" RowBackground="Transparent" AlternatingRowBackground="Transparent"
-                      EnableRowVirtualization="True" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" VirtualizingPanel.ScrollUnit="Pixel"
+                      ScrollViewer.HorizontalScrollBarVisibility="Disabled" EnableRowVirtualization="True" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" VirtualizingPanel.ScrollUnit="Pixel"
                       SelectionChanged="OnSelectionChanged" Sorting="OnSorting" MouseDoubleClick="OnDoubleClick" PreviewKeyDown="OnGridKey"
                       PreviewMouseLeftButtonDown="OnGridMouseDown" PreviewMouseLeftButtonUp="OnGridMouseUp" PreviewMouseMove="OnGridMouseMove"
                       ContextMenuOpening="OnContextMenuOpening" AutomationProperties.Name="{Binding Title, StringFormat={}{0} files}">
+                <DataGrid.RowStyle>
+                    <Style TargetType="DataGridRow">
+                        <Setter Property="Background" Value="Transparent" />
+                        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+                        <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="DataGridRow">
+                                    <Border x:Name="Bd" Background="{TemplateBinding Background}" CornerRadius="4" Margin="4,1" BorderThickness="1" BorderBrush="Transparent">
+                                        <Grid>
+                                            <Border x:Name="Pill" Width="3" Height="16" CornerRadius="2" HorizontalAlignment="Left" Background="{DynamicResource AccentFillColorDefaultBrush}" Visibility="Collapsed" />
+                                            <SelectiveScrollingGrid>
+                                                <SelectiveScrollingGrid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                </SelectiveScrollingGrid.ColumnDefinitions>
+                                                <DataGridCellsPresenter Grid.Column="1" ItemsPanel="{TemplateBinding ItemsPanel}" SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}" />
+                                            </SelectiveScrollingGrid>
+                                        </Grid>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SubtleFillColorTertiaryBrush}" />
+                                        </Trigger>
+                                        <Trigger Property="IsSelected" Value="True">
+                                            <Setter TargetName="Bd" Property="Background" Value="{DynamicResource SelectionFillBrush}" />
+                                            <Setter TargetName="Pill" Property="Visibility" Value="Visible" />
+                                        </Trigger>
+                                        <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                            <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource ControlStrongStrokeColorDefaultBrush}" />
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </DataGrid.RowStyle>
+                <DataGrid.CellStyle>
+                    <Style TargetType="DataGridCell">
+                        <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+                        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="DataGridCell">
+                                    <ContentPresenter VerticalAlignment="Center" Margin="8,0" />
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </DataGrid.CellStyle>
                 <DataGrid.ContextMenu>
                     <ContextMenu />
                 </DataGrid.ContextMenu>
@@ -169,12 +219,12 @@
                 </StackPanel>
             </StackPanel>
 
-            <Border x:Name="DropOverlay" Margin="8" CornerRadius="8" BorderThickness="2" BorderBrush="{DynamicResource AccentFillColorDefaultBrush}" Visibility="Collapsed" IsHitTestVisible="False">
-                <Border.Background>
-                    <SolidColorBrush Color="{DynamicResource SystemAccentColor}" Opacity="0.12" />
-                </Border.Background>
-                <TextBlock x:Name="DropText" HorizontalAlignment="Center" VerticalAlignment="Center" FontWeight="SemiBold" Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}" />
-            </Border>
+            <Grid x:Name="DropOverlay" Margin="8" Visibility="Collapsed" IsHitTestVisible="False">
+                <Border CornerRadius="8" Background="{DynamicResource AccentFillColorDefaultBrush}" Opacity="0.12" />
+                <Border CornerRadius="8" BorderThickness="2" BorderBrush="{DynamicResource AccentFillColorDefaultBrush}">
+                    <TextBlock x:Name="DropText" HorizontalAlignment="Center" VerticalAlignment="Center" FontWeight="SemiBold" Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}" />
+                </Border>
+            </Grid>
         </Grid>
 
         <Border Grid.Row="2" BorderThickness="0,1,0,0" BorderBrush="{DynamicResource DividerStrokeColorDefaultBrush}" Padding="16,6">

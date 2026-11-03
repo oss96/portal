@@ -332,7 +332,7 @@ public sealed class TransferEngine(Func<int> maxParallel)
         await to.RenameAsync(part, file.DestinationPath, overwrite: true, ct).ConfigureAwait(false);
         item.CurrentPartPath = null;
         await BestEffort(() => to.SetModifiedAsync(file.DestinationPath, file.Entry.ModifiedUtc, CancellationToken.None)).ConfigureAwait(false);
-        if (to is RemoteFileSystem remote && replaced?.Mode is int mode)
+        if (to is IServerFileSystem remote && replaced?.Mode is int mode)
             await BestEffort(() => remote.SetModeAsync(file.DestinationPath, mode, CancellationToken.None)).ConfigureAwait(false);
         item.BytesDone = before + file.Entry.Size;
     }

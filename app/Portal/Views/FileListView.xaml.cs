@@ -325,6 +325,8 @@ public partial class FileListView : UserControl
         FocusList();
     }
 
+    private void OnCrumbsSized(object sender, SizeChangedEventArgs e) => CrumbScroll.ScrollToRightEnd();
+
     private void OnCrumbsClick(object sender, MouseButtonEventArgs e)
     {
         if (_pane is null || _pane.IsEditingPath || FindAncestor<Button>(e.OriginalSource) is not null) return;

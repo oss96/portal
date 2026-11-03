@@ -259,9 +259,9 @@
                     <TextBlock Text="Settings" Style="{StaticResource Subtitle}" Margin="0,0,0,16" />
                     <TextBlock Text="Theme" Style="{StaticResource Caption}" Margin="0,0,0,6" />
                     <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
-                        <RadioButton Content="Use Windows setting" IsChecked="{Binding IsSystemTheme}" Margin="0,0,16,0" GroupName="Theme" />
-                        <RadioButton Content="Light" IsChecked="{Binding IsLightTheme}" Margin="0,0,16,0" GroupName="Theme" />
-                        <RadioButton Content="Dark" IsChecked="{Binding IsDarkTheme}" GroupName="Theme" />
+                        <RadioButton Content="Use Windows setting" IsChecked="{Binding IsSystemTheme}" Margin="0,0,24,0" MinWidth="0" GroupName="Theme" />
+                        <RadioButton Content="Light" IsChecked="{Binding IsLightTheme}" Margin="0,0,24,0" MinWidth="0" GroupName="Theme" />
+                        <RadioButton Content="Dark" IsChecked="{Binding IsDarkTheme}" MinWidth="0" GroupName="Theme" />
                     </StackPanel>
                     <TextBlock Text="Transfers at the same time" Style="{StaticResource Caption}" Margin="0,0,0,6" />
                     <ComboBox ItemsSource="{Binding ParallelOptions}" SelectedItem="{Binding Parallel}" Width="120" HorizontalAlignment="Left" AutomationProperties.Name="Transfers at the same time" />

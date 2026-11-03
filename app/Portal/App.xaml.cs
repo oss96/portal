@@ -9,12 +9,25 @@ namespace Portal;
 public partial class App : Application
 {
     /// <summary>Switches between light, dark and the Windows setting.</summary>
-    public static void ApplyTheme(ThemeChoice theme) => Current.ThemeMode = theme switch
+    public static void ApplyTheme(ThemeChoice theme)
     {
-        ThemeChoice.Light => ThemeMode.Light,
-        ThemeChoice.Dark => ThemeMode.Dark,
-        _ => ThemeMode.System,
-    };
+        Current.ThemeMode = theme switch
+        {
+            ThemeChoice.Light => ThemeMode.Light,
+            ThemeChoice.Dark => ThemeMode.Dark,
+            _ => ThemeMode.System,
+        };
+        AddDerivedBrushes(Current);
+    }
+
+    /// <summary>Adds brushes derived from the Windows accent colour, such as the row selection tint.</summary>
+    public static void AddDerivedBrushes(Application app)
+    {
+        var accent = app.TryFindResource("SystemAccentColor") is System.Windows.Media.Color c ? c : System.Windows.Media.Color.FromRgb(0x00, 0x67, 0xC0);
+        var tint = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(0x3D, accent.R, accent.G, accent.B));
+        tint.Freeze();
+        app.Resources["SelectionFillBrush"] = tint;
+    }
 
     /// <inheritdoc />
     protected override async void OnStartup(StartupEventArgs e)
