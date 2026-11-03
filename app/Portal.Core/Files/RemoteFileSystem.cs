@@ -140,7 +140,7 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
 
     /// <summary>Sets the permission bits of one entry.</summary>
     public Task SetModeAsync(string path, int mode, CancellationToken ct) =>
-        Task.Run(() => sftp.ChangePermissions(path, (short)(mode & 0xFFF)), ct);
+        shell.RunCheckedAsync($"chmod {Permissions.ToOctal(mode & 0xFFF)} -- {PosixShell.Quote(path)}", ct);
 
     /// <summary>Changes mode and/or owner of entries, optionally for everything inside folders too.</summary>
     public async Task SetPermissionsAsync(IReadOnlyList<string> paths, int? mode, string? owner, string? group, bool recursive, CancellationToken ct)
@@ -158,6 +158,8 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
         if (steps.Count == 0) return;
         await shell.RunCheckedAsync(string.Join(" && ", steps), ct).ConfigureAwait(false);
     }
+
+    private bool? _gnuFind;
 
     /// <summary>Total size of a folder and everything inside it, measured on the server.</summary>
     public async Task<long> DirectorySizeAsync(string path, CancellationToken ct)
@@ -180,8 +182,11 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
     /// <summary>Finds entries under <paramref name="root"/> whose name contains <paramref name="text"/>.</summary>
     public async Task<IReadOnlyList<FileEntry>> SearchAsync(string root, string text, int limit, CancellationToken ct)
     {
-        var pattern = "*" + EscapeGlob(text) + "*";
-        var cmd = $"find {PosixShell.Quote(root)} -maxdepth 8 -iname {PosixShell.Quote(pattern)} -printf '%y\\t%s\\t%T@\\t%p\\n' 2>/dev/null | head -n {limit}";
+        _gnuFind ??= (await shell.RunAsync("find / -maxdepth 0 -printf '' 2>/dev/null", ct).ConfigureAwait(false)).Succeeded;
+        var find = $"find {PosixShell.Quote(root)} -maxdepth 8 -iname {PosixShell.Quote("*" + EscapeGlob(text) + "*")}";
+        var cmd = _gnuFind == true
+            ? $"{find} -printf '%y\\t%s\\t%T@\\t%p\\n' 2>/dev/null | head -n {limit}"
+            : $"{find} 2>/dev/null | head -n {limit} | while IFS= read -r p; do stat -c '%F\t%s\t%Y\t%n' \"$p\"; done 2>/dev/null";
         var r = await shell.RunAsync(cmd, ct).ConfigureAwait(false);
         return ParseFind(r.Output);
     }
@@ -201,7 +206,13 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
         {
             var f = line.Split('\t', 4);
             if (f.Length < 4) continue;
-            var kind = f[0] switch { "d" => EntryKind.Directory, "f" => EntryKind.File, "l" => EntryKind.LinkToFile, _ => EntryKind.Special };
+            var kind = f[0] switch
+            {
+                "d" or "directory" => EntryKind.Directory,
+                "f" or "regular file" or "regular empty file" => EntryKind.File,
+                "l" or "symbolic link" => EntryKind.LinkToFile,
+                _ => EntryKind.Special,
+            };
             long.TryParse(f[1], out var size);
             var seconds = double.TryParse(f[2], NumberStyles.Float, CultureInfo.InvariantCulture, out var s) ? s : 0;
             var path = f[3];
