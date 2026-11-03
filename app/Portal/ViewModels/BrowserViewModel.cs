@@ -233,12 +233,7 @@ public sealed partial class BrowserViewModel : ObservableObject, IDisposable
         if (source == target)
         {
             if (!target.IsRemote || onFolder is null || entries.Contains(onFolder)) return;
-            await RunAsync("Couldn’t move the items", async () =>
-            {
-                await Session.Files.MoveOnServerAsync([.. entries.Select(e => e.Path)], folder, CancellationToken.None);
-                await target.RefreshAsync();
-                Main.Toasts.Show(ToastKind.Success, $"Moved {Formatting.Count(entries.Count, "item")}", folder);
-            });
+            await CopyOnServerAsync([.. entries.Select(e => e.Entry)], folder, move: true);
             return;
         }
         await TransferAsync(source, [.. entries.Select(e => e.Entry)], target, folder);
@@ -338,13 +333,20 @@ public sealed partial class BrowserViewModel : ObservableObject, IDisposable
         if (entries.Count == 0) return;
         var change = await Main.Dialogs.ShowAsync(new PermissionsDialogViewModel(entries, Session.Files.Accounts));
         if (change is null) return;
+        if (change.Mode.IsEmpty && change.Owner is null && change.Group is null)
+        {
+            Main.Toasts.Show(ToastKind.Info, "Nothing changed", "The permissions and owner are as they were.");
+            return;
+        }
         await RunAsync("Couldn’t change the permissions", async () =>
         {
             await Session.Files.SetPermissionsAsync([.. entries.Select(e => e.Path)], change.Mode, change.Owner, change.Group, change.Recursive, CancellationToken.None);
             await Remote.RefreshAsync();
-            var who = change.Owner is not null || change.Group is not null ? $" · owner {change.Owner ?? entries[0].Owner}:{change.Group ?? entries[0].Group}" : "";
-            Main.Toasts.Show(ToastKind.Success, $"Permissions updated on {Formatting.Count(entries.Count, "item")}",
-                $"{Permissions.ToOctal(change.Mode)}{who}{(change.Recursive ? " · including everything inside" : "")}");
+            var parts = new List<string>();
+            if (!change.Mode.IsEmpty) parts.Add($"chmod {change.Mode.ToChmod()}");
+            if (change.Owner is not null || change.Group is not null) parts.Add($"owner {change.Owner ?? entries[0].Owner}:{change.Group ?? entries[0].Group}");
+            if (change.Recursive) parts.Add("including everything inside");
+            Main.Toasts.Show(ToastKind.Success, $"Permissions updated on {Formatting.Count(entries.Count, "item")}", string.Join(" · ", parts));
         });
     }
 
@@ -379,22 +381,28 @@ public sealed partial class BrowserViewModel : ObservableObject, IDisposable
     private void OpenTerminal()
     {
         var p = Session.Profile;
-        var args = new List<string> { "ssh", "-t" };
-        if (p.User.Length > 0) args.AddRange(["-l", p.User]);
-        if (p.Port is > 0 and not 22) args.AddRange(["-p", p.Port.ToString()]);
-        args.Add(p.Host);
-        args.Add($"cd {PosixShell.Quote(Remote.Path)} && exec \"$SHELL\" -l");
+        var ssh = new List<string> { "-t" };
+        if (p.User.Length > 0) ssh.AddRange(["-l", p.User]);
+        if (p.Port is > 0 and not 22) ssh.AddRange(["-p", p.Port.ToString()]);
+        if (p.Auth == AuthKind.KeyFile && p.KeyFile is { Length: > 0 } key) ssh.AddRange(["-i", key]);
+        ssh.Add(p.Host);
+        var remote = $"cd {PosixShell.Quote(Remote.Path)} && exec \"$SHELL\" -l";
+        if (TryStart("wt.exe", ["ssh", .. ssh, remote.Replace(";", "\\;")]) || TryStart("ssh.exe", [.. ssh, remote])) return;
+        Main.Toasts.Show(ToastKind.Error, "Couldn’t open a terminal", "Neither Windows Terminal nor the OpenSSH client (ssh.exe) was found.");
+    }
+
+    private static bool TryStart(string file, IReadOnlyList<string> args)
+    {
         try
         {
-            var wt = new ProcessStartInfo("wt.exe") { UseShellExecute = true };
-            foreach (var a in args) wt.ArgumentList.Add(a);
-            Process.Start(wt);
+            var psi = new ProcessStartInfo(file) { UseShellExecute = true };
+            foreach (var a in args) psi.ArgumentList.Add(a);
+            Process.Start(psi);
+            return true;
         }
-        catch (Exception)
+        catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
-            var ssh = new ProcessStartInfo("ssh.exe") { UseShellExecute = true };
-            foreach (var a in args.Skip(1)) ssh.ArgumentList.Add(a);
-            Process.Start(ssh);
+            return false;
         }
     }
 
@@ -428,15 +436,8 @@ public sealed partial class BrowserViewModel : ObservableObject, IDisposable
                 return;
             }
             if (!target.IsRemote) return;
-            await RunAsync(c.Cut ? "Couldn’t move the items" : "Couldn’t copy the items", async () =>
-            {
-                var paths = c.Entries.Select(e => e.FullPath).ToList();
-                if (c.Cut) await Session.Files.MoveOnServerAsync(paths, target.Path, CancellationToken.None);
-                else await Session.Files.CopyOnServerAsync(paths, target.Path, CancellationToken.None);
-                if (c.Cut) _clipboard = null;
-                await target.RefreshAsync([.. c.Entries.Select(e => e.Name)]);
-                Main.Toasts.Show(ToastKind.Success, $"{(c.Cut ? "Moved" : "Copied")} {Formatting.Count(paths.Count, "item")} on {ServerName}", target.Path);
-            });
+            if (c.Cut) _clipboard = null;
+            await CopyOnServerAsync(c.Entries, target.Path, move: c.Cut);
             return;
         }
         if (target.IsRemote && Clipboard.ContainsFileDropList())
@@ -584,6 +585,26 @@ public sealed partial class BrowserViewModel : ObservableObject, IDisposable
             if (batch is null) return;
             var verb = batch.Direction == TransferDirection.Upload ? "Uploading" : "Downloading";
             Main.Toasts.Show(ToastKind.Info, $"{verb} {Formatting.Count(batch.Count, "item")}", $"{(batch.Direction == TransferDirection.Upload ? "To" : "From")} {ServerName} · {folder}", "Show transfers", () => Main.Transfers.IsOpen = true);
+        });
+    }
+
+    private async Task CopyOnServerAsync(IReadOnlyList<FileEntry> entries, string folder, bool move)
+    {
+        if (entries.Count == 0) return;
+        if (!Session.Files.CanRunCommands && !move)
+        {
+            Main.Toasts.Show(ToastKind.Error, "Can’t copy on this server", "This account may only transfer files (SFTP only). Download and upload the files instead.");
+            return;
+        }
+        await RunAsync(move ? "Couldn’t move everything" : "Couldn’t copy everything", async () =>
+        {
+            var result = await ServerCopy.RunAsync(Session.Files, entries, folder, move, Main.Preferences.Conflicts,
+                q => Main.Dialogs.ShowAsync(new ConflictDialogViewModel(q)), CancellationToken.None);
+            if (Remote.Path == folder) await Remote.RefreshAsync(result.Placed);
+            else await Remote.RefreshAsync();
+            if (result.Placed.Count == 0) return;
+            var skipped = result.Skipped > 0 ? $" · {Formatting.Count(result.Skipped, "item")} skipped" : "";
+            Main.Toasts.Show(ToastKind.Success, $"{(move ? "Moved" : "Copied")} {Formatting.Count(result.Placed.Count, "item")} on {ServerName}", folder + skipped);
         });
     }
 

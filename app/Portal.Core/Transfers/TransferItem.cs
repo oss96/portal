@@ -127,6 +127,7 @@ public sealed class TransferItem
     internal CancellationTokenSource? Cancellation { get; set; }
     internal bool PauseRequested { get; set; }
     internal string? CurrentPartPath { get; set; }
+    internal string? ResumablePart { get; set; }
 
     internal void Sample()
     {

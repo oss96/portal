@@ -56,3 +56,34 @@ public static class Permissions
         return lines;
     }
 }
+
+/// <summary>The permission bits the user turned on and off, applied on top of each entry's own mode.</summary>
+public sealed record PermissionDelta(int Add, int Remove)
+{
+    private static readonly (char Who, int Shift, int Special, char SpecialLetter)[] Classes = [('u', 6, 0x800, 's'), ('g', 3, 0x400, 's'), ('o', 0, 0x200, 't')];
+
+    /// <summary>The bits that differ between two modes.</summary>
+    public static PermissionDelta Between(int from, int to) => new(to & ~from & 0xFFF, from & ~to & 0xFFF);
+
+    /// <summary>True when nothing changes.</summary>
+    public bool IsEmpty => Add == 0 && Remove == 0;
+
+    /// <summary>The mode an entry gets.</summary>
+    public int ApplyTo(int mode) => (mode | Add) & ~Remove & 0xFFF;
+
+    /// <summary>chmod's symbolic form, such as "u+x,g-w", which leaves every other bit of each entry alone.</summary>
+    public string ToChmod()
+    {
+        var parts = new List<string>();
+        foreach (var (who, shift, special, letter) in Classes)
+        {
+            var add = Letters((Add >> shift) & 7) + ((Add & special) != 0 ? letter.ToString() : "");
+            var remove = Letters((Remove >> shift) & 7) + ((Remove & special) != 0 ? letter.ToString() : "");
+            if (add.Length > 0) parts.Add($"{who}+{add}");
+            if (remove.Length > 0) parts.Add($"{who}-{remove}");
+        }
+        return string.Join(',', parts);
+    }
+
+    private static string Letters(int bits) => ((bits & 4) != 0 ? "r" : "") + ((bits & 2) != 0 ? "w" : "") + ((bits & 1) != 0 ? "x" : "");
+}

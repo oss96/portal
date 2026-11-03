@@ -63,13 +63,24 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
     /// <inheritdoc />
     public async Task<IReadOnlyList<FileEntry>> ListAsync(string path, CancellationToken ct)
     {
-        var list = new List<FileEntry>();
+        var files = new List<ISftpFile>();
         await foreach (var f in sftp.ListDirectoryAsync(path, ct).ConfigureAwait(false))
+            if (f.Name is not ("." or "..")) files.Add(f);
+        using var gate = new SemaphoreSlim(16);
+        var entries = await Task.WhenAll(files.Select(async f =>
         {
-            if (f.Name is "." or "..") continue;
-            list.Add(await ToEntryAsync(f, ct).ConfigureAwait(false));
-        }
-        return list;
+            if (!f.IsSymbolicLink) return ToEntry(f, null);
+            await gate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                return ToEntry(f, await LinkTargetIsDirectoryAsync(f.FullName, ct).ConfigureAwait(false));
+            }
+            finally
+            {
+                gate.Release();
+            }
+        })).ConfigureAwait(false);
+        return entries;
     }
 
     /// <inheritdoc />
@@ -98,7 +109,15 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
             await sftp.RenameFileAsync(from, to, ct).ConfigureAwait(false);
             return;
         }
-        await shell.RunCheckedAsync($"mv -f -- {PosixShell.Quote(from)} {PosixShell.Quote(to)}", ct).ConfigureAwait(false);
+        try
+        {
+            await Task.Run(() => sftp.RenameFile(from, to, isPosix: true), ct).ConfigureAwait(false);
+        }
+        catch (NotSupportedException)
+        {
+            if (await StatAsync(to, ct).ConfigureAwait(false) is { IsDirectory: false }) await sftp.DeleteFileAsync(to, ct).ConfigureAwait(false);
+            await sftp.RenameFileAsync(from, to, ct).ConfigureAwait(false);
+        }
     }
 
     /// <summary>Deletes entries permanently; the server has no recycle bin.</summary>
@@ -106,7 +125,29 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
     {
         if (paths.Count == 0) return;
         if (paths.Any(p => RemotePath.Normalize(p) == "/")) throw new InvalidOperationException("Portal won’t delete the server’s root folder.");
-        await shell.RunCheckedAsync("rm -rf -- " + PosixShell.Join(paths), ct).ConfigureAwait(false);
+        if (shell.IsAvailable)
+        {
+            await shell.RunCheckedAsync("rm -rf -- " + PosixShell.Join(paths), ct).ConfigureAwait(false);
+            return;
+        }
+        foreach (var p in paths) await DeleteTreeAsync(p, ct).ConfigureAwait(false);
+    }
+
+    private async Task DeleteTreeAsync(string path, CancellationToken ct)
+    {
+        var a = await sftp.GetAttributesAsync(path, ct).ConfigureAwait(false);
+        if (!a.IsDirectory)
+        {
+            await sftp.DeleteFileAsync(path, ct).ConfigureAwait(false);
+            return;
+        }
+        await foreach (var f in sftp.ListDirectoryAsync(path, ct).ConfigureAwait(false))
+        {
+            if (f.Name is "." or "..") continue;
+            if (f.IsDirectory && !f.IsSymbolicLink) await DeleteTreeAsync(f.FullName, ct).ConfigureAwait(false);
+            else await sftp.DeleteFileAsync(f.FullName, ct).ConfigureAwait(false);
+        }
+        await sftp.DeleteDirectoryAsync(path, ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -140,17 +181,25 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
 
     /// <summary>Sets the permission bits of one entry.</summary>
     public Task SetModeAsync(string path, int mode, CancellationToken ct) =>
-        shell.RunCheckedAsync($"chmod {Permissions.ToOctal(mode & 0xFFF)} -- {PosixShell.Quote(path)}", ct);
+        Task.Run(() => sftp.ChangePermissions(path, short.Parse(Permissions.ToOctal(mode & 0xFFF), System.Globalization.CultureInfo.InvariantCulture)), ct);
 
-    /// <summary>Changes mode and/or owner of entries, optionally for everything inside folders too.</summary>
-    public async Task SetPermissionsAsync(IReadOnlyList<string> paths, int? mode, string? owner, string? group, bool recursive, CancellationToken ct)
+    /// <summary>Turns permission bits on and off and/or changes the owner, optionally for everything inside folders too.</summary>
+    public async Task SetPermissionsAsync(IReadOnlyList<string> paths, PermissionDelta? mode, string? owner, string? group, bool recursive, CancellationToken ct)
     {
         if (paths.Count == 0) return;
+        var changesMode = mode is { IsEmpty: false };
+        var changesOwner = owner is not null || group is not null;
+        if (!shell.IsAvailable)
+        {
+            if (changesOwner) throw new ShellUnavailableException();
+            if (changesMode) foreach (var p in paths) await ApplyModeAsync(p, mode!, recursive, ct).ConfigureAwait(false);
+            return;
+        }
         var r = recursive ? "-R " : "";
         var targets = PosixShell.Join(paths);
         var steps = new List<string>();
-        if (mode is int m) steps.Add($"chmod {r}{Permissions.ToOctal(m)} -- {targets}");
-        if (owner is not null || group is not null)
+        if (changesMode) steps.Add($"chmod {r}{PosixShell.Quote(mode!.ToChmod())} -- {targets}");
+        if (changesOwner)
         {
             var spec = owner is not null && group is not null ? $"{owner}:{group}" : owner ?? ":" + group;
             steps.Add($"chown {r}{PosixShell.Quote(spec)} -- {targets}");
@@ -159,11 +208,24 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
         await shell.RunCheckedAsync(string.Join(" && ", steps), ct).ConfigureAwait(false);
     }
 
+    private async Task ApplyModeAsync(string path, PermissionDelta delta, bool recursive, CancellationToken ct)
+    {
+        var a = await sftp.GetAttributesAsync(path, ct).ConfigureAwait(false);
+        await SetModeAsync(path, delta.ApplyTo(ModeOf(a)), ct).ConfigureAwait(false);
+        if (!recursive || !a.IsDirectory) return;
+        await foreach (var f in sftp.ListDirectoryAsync(path, ct).ConfigureAwait(false))
+            if (f.Name is not ("." or "..") && !f.IsSymbolicLink) await ApplyModeAsync(f.FullName, delta, true, ct).ConfigureAwait(false);
+    }
+
     private bool? _gnuFind;
+
+    /// <summary>True when the account can run commands, so search, disk usage and server-side copy work.</summary>
+    public bool CanRunCommands => shell.IsAvailable;
 
     /// <summary>Total size of a folder and everything inside it, measured on the server.</summary>
     public async Task<long> DirectorySizeAsync(string path, CancellationToken ct)
     {
+        if (!shell.IsAvailable) return await SumSizesAsync(path, ct).ConfigureAwait(false);
         var q = PosixShell.Quote(path);
         var output = await shell.RunCheckedAsync($"if du -sb -- {q} >/dev/null 2>&1; then du -sb -- {q}; else echo k; du -sk -- {q}; fi", ct).ConfigureAwait(false);
         var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
@@ -175,6 +237,7 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
     /// <summary>Free and used space of the server's storage.</summary>
     public async Task<IReadOnlyList<DiskUsage>> DisksAsync(CancellationToken ct)
     {
+        if (!shell.IsAvailable) return [];
         var r = await shell.RunAsync(DiskUsage.Command, ct).ConfigureAwait(false);
         return DiskUsage.ParseDf(r.Output);
     }
@@ -182,6 +245,7 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
     /// <summary>Finds entries under <paramref name="root"/> whose name contains <paramref name="text"/>.</summary>
     public async Task<IReadOnlyList<FileEntry>> SearchAsync(string root, string text, int limit, CancellationToken ct)
     {
+        if (!shell.IsAvailable) return [];
         _gnuFind ??= (await shell.RunAsync("find / -maxdepth 0 -printf '' 2>/dev/null", ct).ConfigureAwait(false)).Succeeded;
         var find = $"find {PosixShell.Quote(root)} -maxdepth 8 -iname {PosixShell.Quote("*" + EscapeGlob(text) + "*")}";
         var cmd = _gnuFind == true
@@ -191,13 +255,34 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
         return ParseFind(r.Output);
     }
 
-    /// <summary>Copies entries into a folder on the server, keeping modes and times.</summary>
-    public Task CopyOnServerAsync(IReadOnlyList<string> paths, string destinationDirectory, CancellationToken ct) =>
-        shell.RunCheckedAsync($"cp -a -- {PosixShell.Join(paths)} {PosixShell.Quote(destinationDirectory)}/", ct);
+    /// <summary>Copies one entry to <paramref name="destination"/>, keeping modes and times; <paramref name="merge"/> copies a folder's contents into an existing folder.</summary>
+    public Task CopyOnServerAsync(string source, string destination, bool merge, CancellationToken ct)
+    {
+        var (s, d) = (PosixShell.Quote(source), PosixShell.Quote(destination));
+        return shell.RunCheckedAsync(merge ? $"cp -a -- {PosixShell.Quote(source + "/.")} {PosixShell.Quote(destination + "/")}" : $"cp -a -- {s} {d}", ct);
+    }
 
-    /// <summary>Moves entries into a folder on the server.</summary>
-    public Task MoveOnServerAsync(IReadOnlyList<string> paths, string destinationDirectory, CancellationToken ct) =>
-        shell.RunCheckedAsync($"mv -- {PosixShell.Join(paths)} {PosixShell.Quote(destinationDirectory)}/", ct);
+    /// <summary>Moves one entry to <paramref name="destination"/>; <paramref name="merge"/> moves a folder's contents into an existing folder.</summary>
+    public async Task MoveOnServerAsync(string source, string destination, bool merge, CancellationToken ct)
+    {
+        if (merge)
+        {
+            await shell.RunCheckedAsync($"cp -a -- {PosixShell.Quote(source + "/.")} {PosixShell.Quote(destination + "/")} && rm -rf -- {PosixShell.Quote(source)}", ct).ConfigureAwait(false);
+            return;
+        }
+        await RenameAsync(source, destination, overwrite: true, ct).ConfigureAwait(false);
+    }
+
+    private async Task<long> SumSizesAsync(string path, CancellationToken ct)
+    {
+        long total = 0;
+        await foreach (var f in sftp.ListDirectoryAsync(path, ct).ConfigureAwait(false))
+        {
+            if (f.Name is "." or "..") continue;
+            total += f.IsDirectory && !f.IsSymbolicLink ? await SumSizesAsync(f.FullName, ct).ConfigureAwait(false) : f.IsRegularFile ? f.Length : 0;
+        }
+        return total;
+    }
 
     internal static IReadOnlyList<FileEntry> ParseFind(string output)
     {
@@ -250,22 +335,22 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
         return m;
     }
 
-    private async Task<FileEntry> ToEntryAsync(ISftpFile f, CancellationToken ct)
+    private async Task<bool> LinkTargetIsDirectoryAsync(string path, CancellationToken ct)
     {
-        EntryKind kind;
-        if (f.IsSymbolicLink)
+        try
         {
-            try
-            {
-                var target = await sftp.GetAttributesAsync(f.FullName, ct).ConfigureAwait(false);
-                kind = target.IsDirectory ? EntryKind.LinkToDirectory : EntryKind.LinkToFile;
-            }
-            catch (SshException)
-            {
-                kind = EntryKind.LinkToFile;
-            }
+            return (await sftp.GetAttributesAsync(path, ct).ConfigureAwait(false)).IsDirectory;
         }
-        else kind = f.IsDirectory ? EntryKind.Directory : f.IsRegularFile ? EntryKind.File : EntryKind.Special;
+        catch (SshException)
+        {
+            return false;
+        }
+    }
+
+    private FileEntry ToEntry(ISftpFile f, bool? linkToDirectory)
+    {
+        var kind = linkToDirectory is bool dir ? (dir ? EntryKind.LinkToDirectory : EntryKind.LinkToFile)
+            : f.IsDirectory ? EntryKind.Directory : f.IsRegularFile ? EntryKind.File : EntryKind.Special;
         return Describe(f.Name, f.FullName, kind, f.Attributes);
     }
 

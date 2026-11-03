@@ -56,7 +56,7 @@ public sealed partial class ConflictDialogViewModel(ConflictQuestion question) :
     public string Title => $"“{question.Incoming.Name}” is already on {question.DestinationLabel}";
 
     /// <summary>Label of the incoming copy.</summary>
-    public string IncomingLabel => question.Direction == TransferDirection.Upload ? "Yours on This PC" : "On the server";
+    public string IncomingLabel => question.IncomingLabel ?? (question.Direction == TransferDirection.Upload ? "Yours on This PC" : "On the server");
 
     /// <summary>Size and date of the incoming copy.</summary>
     public string IncomingDetail => Describe(question.Incoming);
@@ -74,6 +74,12 @@ public sealed partial class ConflictDialogViewModel(ConflictQuestion question) :
 
     /// <summary>Label of the Replace choice.</summary>
     public string ReplaceText => question.Incoming.IsDirectory ? "Merge into it" : "Replace it";
+
+    /// <summary>True when Replace is offered.</summary>
+    public bool CanReplace => question.CanReplace;
+
+    /// <summary>Why Replace is missing.</summary>
+    public string? NoReplaceReason => question.CanReplace ? null : question.Incoming.IsDirectory ? "A folder can’t replace a file, so keep both or skip." : "A file can’t replace a folder, so keep both or skip.";
 
     /// <summary>Explains Keep both.</summary>
     public string KeepBothHint => $"The new copy is saved as “{question.KeepBothName}”.";
@@ -98,7 +104,7 @@ public sealed partial class ConflictDialogViewModel(ConflictQuestion question) :
 }
 
 /// <summary>What the permissions dialog changes.</summary>
-public sealed record PermissionChange(int Mode, string? Owner, string? Group, bool Recursive);
+public sealed record PermissionChange(PermissionDelta Mode, string? Owner, string? Group, bool Recursive);
 
 /// <summary>One checkbox cell of the permission grid.</summary>
 public sealed partial class PermissionBit(PermissionsDialogViewModel owner, int bit, string label) : ObservableObject
@@ -143,6 +149,9 @@ public sealed partial class PermissionsDialogViewModel : DialogViewModel<Permiss
         _octalText = Permissions.ToOctal(_mode);
         Title = entries.Count == 1 ? $"Permissions for “{first.Name}”" : $"Permissions for {entries.Count} items";
         HasFolders = entries.Any(e => e.IsDirectory);
+        Hint = entries.Count == 1 && !HasFolders
+            ? "Ticks show the current permissions."
+            : $"Ticks show “{first.Name}”. Only the boxes you change are applied; everything else keeps its own permissions.";
         Owners = [.. accounts.UserNames.Union(first.Owner is null ? [] : [first.Owner]).Order(StringComparer.Ordinal)];
         Groups = [.. accounts.GroupNames.Union(first.Group is null ? [] : [first.Group]).Order(StringComparer.Ordinal)];
         string[] who = ["Owner", "Group", "Everyone"];
@@ -154,6 +163,9 @@ public sealed partial class PermissionsDialogViewModel : DialogViewModel<Permiss
 
     /// <summary>Headline.</summary>
     public string Title { get; }
+
+    /// <summary>Explains that untouched boxes keep each item's own setting.</summary>
+    public string Hint { get; }
 
     /// <summary>True when a folder is selected, enabling the recursive option.</summary>
     public bool HasFolders { get; }
@@ -207,7 +219,7 @@ public sealed partial class PermissionsDialogViewModel : DialogViewModel<Permiss
     {
         var owner = Owner != _originalOwner ? Owner : null;
         var group = Group != _originalGroup ? Group : null;
-        Close(new PermissionChange(Mode, owner, group, Recursive));
+        Close(new PermissionChange(PermissionDelta.Between(_originalMode, Mode), owner, group, Recursive));
     }
 
     [RelayCommand]

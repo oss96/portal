@@ -89,7 +89,7 @@ public sealed class SshIntegrationTests(SshServerFixture server) : IDisposable
         Assert.Equal("body{}", (await server.Exec($"cat '{work.Replace("'", "'\\''")}/site/css/app.css'")).Trim());
 
         var file = RemotePath.Combine(work, "hello world.txt");
-        await fs.SetPermissionsAsync([file], 0x1E4, null, null, recursive: false, default);
+        await fs.SetPermissionsAsync([file], PermissionDelta.Between(0x1A4, 0x1E4), null, null, recursive: false, default);
         Assert.Equal(0x1E4, (await fs.StatAsync(file, default))!.Mode);
 
         await File.WriteAllTextAsync(local, "second version, longer");
@@ -102,8 +102,10 @@ public sealed class SshIntegrationTests(SshServerFixture server) : IDisposable
         Assert.Equal("body{}", await File.ReadAllTextAsync(Path.Combine(download, "site", "css", "app.css")));
 
         await fs.RenameAsync(file, RemotePath.Combine(work, "renamed.txt"), overwrite: false, default);
-        await fs.CopyOnServerAsync([RemotePath.Combine(work, "renamed.txt")], RemotePath.Combine(work, "site"), default);
-        await fs.MoveOnServerAsync([RemotePath.Combine(work, "renamed.txt")], RemotePath.Combine(RemotePath.Combine(work, "site"), "css"), default);
+        var renamed = (await fs.StatAsync(RemotePath.Combine(work, "renamed.txt"), default))!;
+        var never = new Func<ConflictQuestion, Task<ConflictAnswer>>(_ => throw new InvalidOperationException("no conflict expected"));
+        await ServerCopy.RunAsync(fs, [renamed], RemotePath.Combine(work, "site"), move: false, ConflictPolicy.Ask, never, default);
+        await ServerCopy.RunAsync(fs, [renamed], RemotePath.Combine(RemotePath.Combine(work, "site"), "css"), move: true, ConflictPolicy.Ask, never, default);
         var site = await fs.ListAsync(RemotePath.Combine(work, "site"), default);
         Assert.Contains(site, e => e.Name == "renamed.txt");
         Assert.Contains(await fs.ListAsync(RemotePath.Combine(RemotePath.Combine(work, "site"), "css"), default), e => e.Name == "renamed.txt");
@@ -116,6 +118,100 @@ public sealed class SshIntegrationTests(SshServerFixture server) : IDisposable
 
         await fs.DeleteAsync([work], default);
         Assert.Null(await fs.StatAsync(work, default));
+    }
+
+    [SshFact]
+    public async Task An_sftp_only_account_connects_transfers_and_manages_files_without_a_shell()
+    {
+        var profile = new ServerProfile { Name = "SFTP only", Host = "127.0.0.1", Port = server.SftpOnlyPort, User = server.User };
+        await using var session = await SshConnector.ConnectAsync(profile, new Prompts(), new Progress<ConnectStage>(), default);
+        var fs = session.Files;
+        Assert.False(fs.CanRunCommands);
+        var work = RemotePath.Combine(fs.HomeDirectory, "sftp-only");
+        if (await fs.StatAsync(work, default) is not null) await fs.DeleteAsync([work], default);
+        await fs.CreateDirectoryAsync(work, default);
+        await fs.CreateDirectoryAsync(RemotePath.Combine(work, "nested"), default);
+
+        var local = Path.Combine(_local, "plain.txt");
+        await File.WriteAllTextAsync(local, "one");
+        var engine = new TransferEngine(() => 2);
+        var pc = new LocalFileSystem();
+        await RunAsync(engine, pc, [(await pc.StatAsync(local, default))!], session.TransferFiles, work);
+        await File.WriteAllTextAsync(local, "two, replaced");
+        await RunAsync(engine, pc, [(await pc.StatAsync(local, default))!], session.TransferFiles, work, ConflictChoice.Replace);
+
+        var file = RemotePath.Combine(work, "plain.txt");
+        Assert.Equal(13, (await fs.StatAsync(file, default))!.Size);
+        Assert.DoesNotContain(await fs.ListAsync(work, default), e => e.Name.EndsWith(".portal-part", StringComparison.Ordinal));
+
+        await fs.SetPermissionsAsync([file], PermissionDelta.Between(0x1A4, 0x1E4), null, null, recursive: false, default);
+        Assert.Equal(0x1E4, (await fs.StatAsync(file, default))!.Mode);
+        Assert.Equal(13, await fs.DirectorySizeAsync(work, default));
+        Assert.Empty(await fs.SearchAsync(work, "plain", 10, default));
+        await Assert.ThrowsAsync<ShellUnavailableException>(() => fs.SetPermissionsAsync([file], null, "root", null, false, default));
+
+        await fs.DeleteAsync([work], default);
+        Assert.Null(await fs.StatAsync(work, default));
+    }
+
+    [SshFact]
+    public async Task A_key_of_a_type_not_on_record_is_treated_as_changed()
+    {
+        var path = Path.Combine(server.SshDirectory, "known_hosts");
+        File.Delete(path);
+        await using (await SshConnector.ConnectAsync(Profile(), new Prompts(), new Progress<ConnectStage>(), default)) { }
+        var line = (await File.ReadAllLinesAsync(path)).Single();
+        var fields = line.Split(' ');
+        var rsa = Convert.ToBase64String(new byte[] { 0, 0, 0, 7 }.Concat("ssh-rsa"u8.ToArray()).Concat(new byte[] { 0, 0, 0, 1, 3, 0, 0, 0, 1, 1 }).ToArray());
+        await File.WriteAllTextAsync(path, $"{fields[0]} ssh-rsa {rsa}\n");
+        try
+        {
+            var prompts = new Prompts();
+            await Assert.ThrowsAnyAsync<Exception>(() => SshConnector.ConnectAsync(Profile(), prompts, new Progress<ConnectStage>(), default));
+            Assert.Equal(0, prompts.TrustQuestions);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [SshFact]
+    public async Task Permission_changes_touch_only_the_changed_bits_and_server_copies_ask_about_conflicts()
+    {
+        await using var session = await SshConnector.ConnectAsync(Profile(), new Prompts(), new Progress<ConnectStage>(), default);
+        var fs = session.Files;
+        var work = RemotePath.Combine(fs.HomeDirectory, "perm-copy");
+        await fs.DeleteAsync([work], default);
+        var q = work.Replace("'", "'\\''");
+        await server.Exec($"mkdir -p '{q}/tree/sub' '{q}/dest' && echo a > '{q}/tree/script.sh' && echo b > '{q}/tree/sub/notes.txt' && chmod 700 '{q}/tree/script.sh' && chmod 640 '{q}/tree/sub/notes.txt' && chmod 755 '{q}/tree' '{q}/tree/sub' && echo old > '{q}/dest/script.sh' && echo d > '{q}/doc.txt'");
+
+        await fs.SetPermissionsAsync([RemotePath.Combine(work, "tree")], PermissionDelta.Between(0x1ED, 0x1FD), null, null, recursive: true, default);
+        Assert.Equal(0x1FD, (await fs.StatAsync(RemotePath.Combine(work, "tree"), default))!.Mode);
+        Assert.Equal(0x1D0, (await fs.StatAsync(work + "/tree/script.sh", default))!.Mode);
+        Assert.Equal(0x1B0, (await fs.StatAsync(work + "/tree/sub/notes.txt", default))!.Mode);
+
+        var script = (await fs.StatAsync(work + "/tree/script.sh", default))!;
+        var asked = new List<ConflictQuestion>();
+        var result = await ServerCopy.RunAsync(fs, [script], RemotePath.Combine(work, "dest"), move: false, ConflictPolicy.Ask, question =>
+        {
+            asked.Add(question);
+            return Task.FromResult(new ConflictAnswer(ConflictChoice.KeepBoth, false));
+        }, default);
+        Assert.Single(asked);
+        Assert.Equal(["script (1).sh"], result.Placed);
+        Assert.Equal("old", (await server.Exec($"cat '{q}/dest/script.sh'")).Trim());
+        Assert.Equal("a", (await server.Exec($"cat '{q}/dest/script (1).sh'")).Trim());
+
+        var doc = (await fs.StatAsync(work + "/doc.txt", default))!;
+        var copies = await ServerCopy.RunAsync(fs, [doc, doc], work, move: false, ConflictPolicy.Ask, _ => throw new InvalidOperationException("same-folder copies never ask"), default);
+        Assert.Equal(["doc - Copy.txt", "doc - Copy (2).txt"], copies.Placed);
+
+        await ServerCopy.RunAsync(fs, [script], RemotePath.Combine(work, "dest"), move: true, ConflictPolicy.Replace, _ => throw new InvalidOperationException("policy answers"), default);
+        Assert.Equal("a", (await server.Exec($"cat '{q}/dest/script.sh'")).Trim());
+        Assert.Null(await fs.StatAsync(work + "/tree/script.sh", default));
+
+        await fs.DeleteAsync([work], default);
     }
 
     private static async Task RunAsync(TransferEngine engine, IFileSystem from, IReadOnlyList<FileEntry> sources, IFileSystem to, string folder, ConflictChoice answer = ConflictChoice.Replace)

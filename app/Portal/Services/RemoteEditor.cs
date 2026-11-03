@@ -11,6 +11,7 @@ public sealed class RemoteEditor(IServerSession session, ToastService toasts) : 
 {
     private readonly List<FileSystemWatcher> _watchers = [];
     private readonly Dictionary<string, CancellationTokenSource> _pending = [];
+    private readonly Dictionary<string, SemaphoreSlim> _uploading = [];
 
     /// <summary>Downloads the file to a private temp folder, opens it, and starts watching it.</summary>
     public async Task OpenAsync(FileEntry file)
@@ -57,24 +58,38 @@ public sealed class RemoteEditor(IServerSession session, ToastService toasts) : 
 
     private async Task UploadSoonAsync(string local, string remote, CancellationToken ct)
     {
+        SemaphoreSlim gate;
+        lock (_pending)
+        {
+            if (!_uploading.TryGetValue(local, out gate!)) _uploading[local] = gate = new SemaphoreSlim(1, 1);
+        }
         try
         {
             await Task.Delay(800, ct);
-            var fs = session.TransferFiles;
-            var part = RemotePath.Combine(RemotePath.Parent(remote) ?? "/", $".{RemotePath.NameOf(remote)}.portal-part");
-            var mode = (await fs.StatAsync(remote, ct))?.Mode;
-            await using (var source = new FileStream(local, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-                await fs.WriteFromAsync(part, source, append: false, new Progress<long>(), ct);
-            await fs.RenameAsync(part, remote, overwrite: true, ct);
-            if (mode is int m) await fs.SetModeAsync(remote, m, ct);
-            toasts.Show(ToastKind.Success, $"Saved {RemotePath.NameOf(remote)} to {session.Profile.Name}", remote);
+            await gate.WaitAsync(ct);
         }
         catch (OperationCanceledException)
         {
+            return;
+        }
+        try
+        {
+            var fs = session.TransferFiles;
+            var part = RemotePath.Combine(RemotePath.Parent(remote) ?? "/", $".{RemotePath.NameOf(remote)}.portal-part");
+            var mode = (await fs.StatAsync(remote, CancellationToken.None))?.Mode;
+            await using (var source = new FileStream(local, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                await fs.WriteFromAsync(part, source, append: false, new Progress<long>(), CancellationToken.None);
+            await fs.RenameAsync(part, remote, overwrite: true, CancellationToken.None);
+            if (mode is int m) await fs.SetModeAsync(remote, m, CancellationToken.None);
+            toasts.Show(ToastKind.Success, $"Saved {RemotePath.NameOf(remote)} to {session.Profile.Name}", remote);
         }
         catch (Exception e)
         {
             toasts.Show(ToastKind.Error, $"Couldn’t save {RemotePath.NameOf(remote)} to {session.Profile.Name}", FriendlyError.ForOperation(e));
+        }
+        finally
+        {
+            gate.Release();
         }
     }
 

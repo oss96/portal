@@ -22,6 +22,7 @@ public sealed partial class MainViewModel : ObservableObject, IConnectPrompts
         foreach (var s in store.LoadServers()) Servers.Add(s);
         Transfers = new TransfersViewModel(new TransferEngine(() => Preferences.ParallelTransfers));
         Transfers.Engine.BatchFinished += OnBatchFinished;
+        Transfers.ReportError = (title, body) => Toasts.Show(ToastKind.Error, title, body);
         Updates = new UpdatesViewModel(this);
         Connect = new ConnectViewModel(this);
         _current = Connect;
@@ -121,7 +122,7 @@ public sealed partial class MainViewModel : ObservableObject, IConnectPrompts
         if (Browser is not null && Transfers.Engine.HasUnfinished)
         {
             var go = await Dialogs.ShowAsync(new MessageDialogViewModel("Transfers are still running",
-                $"Connecting to {card.Title} closes the connection to {Browser.Session.Profile.Name} and stops its transfers. You can retry them later.", $"Connect to {card.Title}", "Stay"));
+                $"Connecting to {card.Title} closes the connection to {Browser.Session.Profile.Name} and cancels its unfinished transfers. Partial files are removed.", $"Connect to {card.Title}", "Stay"));
             if (!go) return;
         }
         Current = Connect;
@@ -160,10 +161,10 @@ public sealed partial class MainViewModel : ObservableObject, IConnectPrompts
     public async Task DisconnectAsync()
     {
         if (Browser is not { } b) return;
-        foreach (var item in Transfers.Engine.Snapshot().Where(i => i.Status is TransferStatus.Running or TransferStatus.Queued)) Transfers.Engine.Pause(item);
-        Browser = null;
-        b.Dispose();
-        await b.Session.DisposeAsync();
+        if (Transfers.Engine.HasUnfinished && !await Dialogs.ShowAsync(new MessageDialogViewModel($"Disconnect from {b.Session.Profile.Name}?",
+                "Unfinished transfers are cancelled and their partial files removed.", "Disconnect", "Stay")))
+            return;
+        await CloseBrowserAsync(b);
         Connect.RefreshCards();
         Current = Connect;
         OnPropertyChanged(nameof(Title));
@@ -216,12 +217,7 @@ public sealed partial class MainViewModel : ObservableObject, IConnectPrompts
     /// <summary>Shows the browser for an open session, closing the previous one.</summary>
     public async Task OpenAsync(IServerSession session)
     {
-        if (Browser is { } old)
-        {
-            Browser = null;
-            old.Dispose();
-            await old.Session.DisposeAsync();
-        }
+        if (Browser is { } old) await CloseBrowserAsync(old);
         var browser = new BrowserViewModel(this, session);
         Browser = browser;
         Current = browser;
@@ -229,6 +225,17 @@ public sealed partial class MainViewModel : ObservableObject, IConnectPrompts
         Transfers.EnsureConnected = browser.EnsureConnectedAsync;
         Transfers.ShowItem = browser.ShowTransferred;
         await browser.StartAsync();
+    }
+
+    private async Task CloseBrowserAsync(BrowserViewModel browser)
+    {
+        var cancelled = Transfers.Engine.CancelAllUsing(browser.Session.TransferFiles);
+        if (cancelled > 0) Toasts.Show(ToastKind.Info, $"Cancelled {Formatting.Count(cancelled, "transfer")}", $"They belonged to the connection to {browser.Session.Profile.Name}.");
+        Browser = null;
+        Transfers.EnsureConnected = null;
+        Transfers.ShowItem = null;
+        browser.Dispose();
+        await browser.Session.DisposeAsync();
     }
 
     private void OnBatchFinished(TransferBatch batch, IReadOnlyList<TransferItem> items)

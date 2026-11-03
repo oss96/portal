@@ -14,8 +14,11 @@ public interface IServerFileSystem : IFileSystem
     /// <summary>Sets the permission bits of one entry.</summary>
     Task SetModeAsync(string path, int mode, CancellationToken ct);
 
-    /// <summary>Changes mode and/or owner of entries, optionally for everything inside folders too.</summary>
-    Task SetPermissionsAsync(IReadOnlyList<string> paths, int? mode, string? owner, string? group, bool recursive, CancellationToken ct);
+    /// <summary>True when the account can run commands; SFTP-only accounts can't search, measure disks or copy on the server.</summary>
+    bool CanRunCommands { get; }
+
+    /// <summary>Turns permission bits on and off and/or changes the owner, optionally for everything inside folders too.</summary>
+    Task SetPermissionsAsync(IReadOnlyList<string> paths, PermissionDelta? mode, string? owner, string? group, bool recursive, CancellationToken ct);
 
     /// <summary>Total size of a folder and everything inside it.</summary>
     Task<long> DirectorySizeAsync(string path, CancellationToken ct);
@@ -26,9 +29,9 @@ public interface IServerFileSystem : IFileSystem
     /// <summary>Finds entries under <paramref name="root"/> whose name contains <paramref name="text"/>.</summary>
     Task<IReadOnlyList<FileEntry>> SearchAsync(string root, string text, int limit, CancellationToken ct);
 
-    /// <summary>Copies entries into a folder on the server, keeping modes and times.</summary>
-    Task CopyOnServerAsync(IReadOnlyList<string> paths, string destinationDirectory, CancellationToken ct);
+    /// <summary>Copies one entry to <paramref name="destination"/>; <paramref name="merge"/> copies a folder's contents into an existing folder.</summary>
+    Task CopyOnServerAsync(string source, string destination, bool merge, CancellationToken ct);
 
-    /// <summary>Moves entries into a folder on the server.</summary>
-    Task MoveOnServerAsync(IReadOnlyList<string> paths, string destinationDirectory, CancellationToken ct);
+    /// <summary>Moves one entry to <paramref name="destination"/>; <paramref name="merge"/> moves a folder's contents into an existing folder.</summary>
+    Task MoveOnServerAsync(string source, string destination, bool merge, CancellationToken ct);
 }

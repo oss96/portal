@@ -143,6 +143,48 @@ public sealed class TransferEngineTests : IDisposable
     }
 
     [Fact]
+    public async Task A_new_transfer_ignores_a_leftover_partial_file()
+    {
+        _server.AddFile("/data/.backup.tar.portal-part", "OLD-VERSION-HALF");
+        var file = LocalFile("backup.tar", "brand new contents");
+
+        await RunAsync(_pc, [await Stat(file)], _server, "/data");
+
+        Assert.Equal("brand new contents", _server.Read("/data/backup.tar"));
+        Assert.Equal(0, _server.AppendedWrites);
+    }
+
+    [Fact]
+    public async Task A_download_onto_a_name_that_differs_only_in_case_asks_first()
+    {
+        File.WriteAllText(Path.Combine(_local, "readme.md"), "mine");
+        _server.AddFile("/data/README.md", "theirs");
+        var asked = 0;
+
+        await _engine.EnqueueAsync(_server, [(await _server.StatAsync("/data/README.md", default))!], _pc, _local, ConflictPolicy.Ask,
+            _ => { asked++; return Task.FromResult(new ConflictAnswer(ConflictChoice.Skip, false)); }, default);
+
+        Assert.Equal(1, asked);
+        Assert.Equal("mine", File.ReadAllText(Path.Combine(_local, "readme.md")));
+    }
+
+    [Fact]
+    public async Task A_file_meeting_a_folder_of_the_same_name_is_asked_about_even_with_replace_as_policy()
+    {
+        _server.AddDirectory("/data/notes");
+        var file = LocalFile("notes", "a file named notes");
+        ConflictQuestion? question = null;
+
+        var batch = await _engine.EnqueueAsync(_pc, [await Stat(file)], _server, "/data", ConflictPolicy.Replace,
+            q => { question = q; return Task.FromResult(new ConflictAnswer(ConflictChoice.KeepBoth, false)); }, default);
+        await WaitAsync(batch!);
+
+        Assert.NotNull(question);
+        Assert.False(question!.CanReplace);
+        Assert.Equal("a file named notes", _server.Read("/data/notes (1)"));
+    }
+
+    [Fact]
     public void Unique_name_counts_up_past_taken_names()
     {
         var taken = new HashSet<string> { "a.txt", "a (1).txt" };

@@ -125,7 +125,8 @@ internal sealed class FakeServer : IServerFileSystem
 
     public Task SetModifiedAsync(string path, DateTime modifiedUtc, CancellationToken ct) => Task.CompletedTask;
     public Task SetModeAsync(string path, int mode, CancellationToken ct) => Task.CompletedTask;
-    public Task SetPermissionsAsync(IReadOnlyList<string> paths, int? mode, string? owner, string? group, bool recursive, CancellationToken ct) => Task.CompletedTask;
+    public bool CanRunCommands => true;
+    public Task SetPermissionsAsync(IReadOnlyList<string> paths, PermissionDelta? mode, string? owner, string? group, bool recursive, CancellationToken ct) => Task.CompletedTask;
     public Task<long> DirectorySizeAsync(string path, CancellationToken ct) => Task.FromResult(_entries.Values.Where(e => RemotePath.IsWithin(e.FullPath, path)).Sum(e => e.Size));
 
     public Task<IReadOnlyList<DiskUsage>> DisksAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<DiskUsage>>(
@@ -138,8 +139,8 @@ internal sealed class FakeServer : IServerFileSystem
     public Task<IReadOnlyList<FileEntry>> SearchAsync(string root, string text, int limit, CancellationToken ct) =>
         Task.FromResult<IReadOnlyList<FileEntry>>([.. _entries.Values.Where(e => RemotePath.IsWithin(e.FullPath, root) && e.Name.Contains(text, StringComparison.OrdinalIgnoreCase)).Take(limit)]);
 
-    public Task CopyOnServerAsync(IReadOnlyList<string> paths, string destinationDirectory, CancellationToken ct) => Task.CompletedTask;
-    public Task MoveOnServerAsync(IReadOnlyList<string> paths, string destinationDirectory, CancellationToken ct) => Task.CompletedTask;
+    public Task CopyOnServerAsync(string source, string destination, bool merge, CancellationToken ct) => Task.CompletedTask;
+    public Task MoveOnServerAsync(string source, string destination, bool merge, CancellationToken ct) => Task.CompletedTask;
 
     private void Dir(string path, string owner, string group, int mode, string when) =>
         _entries[path] = new FileEntry(RemotePath.NameOf(path), path, EntryKind.Directory, 0, DateTime.Parse(when).ToUniversalTime()) { Mode = mode, Owner = owner, Group = group };

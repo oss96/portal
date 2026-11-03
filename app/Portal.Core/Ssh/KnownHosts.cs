@@ -51,6 +51,17 @@ public sealed class KnownHosts(string path)
         return trusted ? HostKeyStatus.Trusted : sameType ? HostKeyStatus.Changed : HostKeyStatus.Unknown;
     }
 
+    /// <summary>Key types (rsa-sha2-* reported as ssh-rsa) with a trusted entry for the host, so a connection can insist on one of them.</summary>
+    public IReadOnlySet<string> RecordedKeyTypes(string host, int port)
+    {
+        if (!File.Exists(Path)) return new HashSet<string>();
+        var lookupName = LookupName(host, port);
+        return File.ReadLines(Path).Select(ParseLine).OfType<Entry>()
+            .Where(e => !e.Revoked && e.MatchesHost(lookupName))
+            .Select(e => e.KeyType)
+            .ToHashSet(StringComparer.Ordinal);
+    }
+
     /// <summary>Appends a plain entry for the host, creating the file and its folder when needed.</summary>
     public void Add(string host, int port, string keyType, byte[] keyBlob)
     {

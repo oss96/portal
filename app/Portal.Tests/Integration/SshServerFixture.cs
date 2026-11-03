@@ -20,12 +20,16 @@ public sealed class SshServerFixture : IAsyncLifetime
 {
     private const string Image = "lscr.io/linuxserver/openssh-server:latest";
     private string? _container;
+    private string? _sftpOnlyContainer;
 
     /// <summary>Folder used as %USERPROFILE%\.ssh for the tests.</summary>
     public string SshDirectory { get; } = Directory.CreateTempSubdirectory("portal-ssh-").FullName;
 
     /// <summary>Host port mapped to the container's sshd.</summary>
     public int Port { get; private set; }
+
+    /// <summary>Host port of a second server where the account may only use SFTP (ForceCommand internal-sftp).</summary>
+    public int SftpOnlyPort { get; private set; }
 
     /// <summary>Account inside the container.</summary>
     public string User => "portal";
@@ -40,25 +44,37 @@ public sealed class SshServerFixture : IAsyncLifetime
         var key = Path.Combine(SshDirectory, "id_ed25519");
         await Run("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "portal-tests", "-f", key);
         var publicKey = (await File.ReadAllTextAsync(key + ".pub")).Trim();
-        _container = (await Run("docker", "run", "-d", "--rm", "-p", "127.0.0.1::2222",
-            "-e", $"PUBLIC_KEY={publicKey}", "-e", $"USER_NAME={User}", "-e", "PASSWORD_ACCESS=true", "-e", $"USER_PASSWORD={Password}", Image)).Trim();
-        var mapping = (await Run("docker", "port", _container, "2222/tcp")).Trim().Split('\n')[0];
-        Port = int.Parse(mapping[(mapping.LastIndexOf(':') + 1)..]);
-        await WaitForBannerAsync();
+        (_container, Port) = await StartContainerAsync(publicKey);
+        (_sftpOnlyContainer, SftpOnlyPort) = await StartContainerAsync(publicKey);
+        await WaitForBannerAsync(Port);
+        await WaitForBannerAsync(SftpOnlyPort);
+        await Run("docker", "exec", _sftpOnlyContainer, "sh", "-c",
+            $"printf '\\nMatch User {User}\\n    ForceCommand internal-sftp\\n' >> /config/sshd/sshd_config && kill -HUP $(pgrep -o sshd)");
+        await Task.Delay(1500);
+        await WaitForBannerAsync(SftpOnlyPort);
         AppPaths.SshDirectory = SshDirectory;
     }
 
     /// <inheritdoc />
     public async Task DisposeAsync()
     {
-        if (_container is not null) await Run("docker", "rm", "-f", _container);
+        foreach (var c in new[] { _container, _sftpOnlyContainer })
+            if (c is not null) await Run("docker", "rm", "-f", c);
         Directory.Delete(SshDirectory, recursive: true);
     }
 
     /// <summary>Runs a command inside the container as the test user.</summary>
     public Task<string> Exec(string command) => Run("docker", "exec", "-u", User, _container!, "sh", "-c", command);
 
-    private async Task WaitForBannerAsync()
+    private async Task<(string Container, int Port)> StartContainerAsync(string publicKey)
+    {
+        var container = (await Run("docker", "run", "-d", "--rm", "-p", "127.0.0.1::2222",
+            "-e", $"PUBLIC_KEY={publicKey}", "-e", $"USER_NAME={User}", "-e", "PASSWORD_ACCESS=true", "-e", $"USER_PASSWORD={Password}", Image)).Trim();
+        var mapping = (await Run("docker", "port", container, "2222/tcp")).Trim().Split('\n')[0];
+        return (container, int.Parse(mapping[(mapping.LastIndexOf(':') + 1)..]));
+    }
+
+    private static async Task WaitForBannerAsync(int port)
     {
         var deadline = DateTime.UtcNow.AddSeconds(60);
         while (DateTime.UtcNow < deadline)
@@ -66,7 +82,7 @@ public sealed class SshServerFixture : IAsyncLifetime
             try
             {
                 using var tcp = new TcpClient();
-                await tcp.ConnectAsync("127.0.0.1", Port);
+                await tcp.ConnectAsync("127.0.0.1", port);
                 var buffer = new byte[64];
                 tcp.ReceiveTimeout = 2000;
                 var n = await tcp.GetStream().ReadAsync(buffer).AsTask().WaitAsync(TimeSpan.FromSeconds(3));

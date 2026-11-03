@@ -18,7 +18,14 @@ public enum ConflictChoice
 }
 
 /// <summary>A conflict the user is asked about.</summary>
-public sealed record ConflictQuestion(FileEntry Incoming, FileEntry Existing, TransferDirection Direction, string DestinationLabel, string KeepBothName, int Remaining);
+public sealed record ConflictQuestion(FileEntry Incoming, FileEntry Existing, TransferDirection Direction, string DestinationLabel, string KeepBothName, int Remaining)
+{
+    /// <summary>False when a file meets a folder of the same name; then only Keep both and Skip make sense.</summary>
+    public bool CanReplace => Incoming.IsDirectory == Existing.IsDirectory;
+
+    /// <summary>Label for the incoming copy when it isn't an upload or download, such as "Being moved".</summary>
+    public string? IncomingLabel { get; init; }
+}
 
 /// <summary>The user's answer to a <see cref="ConflictQuestion"/>.</summary>
 public sealed record ConflictAnswer(ConflictChoice Choice, bool ApplyToRest);
@@ -53,8 +60,10 @@ public sealed class TransferEngine(Func<int> maxParallel)
     {
         if (from.IsRemote == to.IsRemote) throw new InvalidOperationException("Transfers go between this PC and a server.");
         var direction = to.IsRemote ? TransferDirection.Upload : TransferDirection.Download;
-        var existing = (await to.ListAsync(destinationDirectory, ct).ConfigureAwait(false)).ToDictionary(e => e.Name, StringComparer.Ordinal);
-        var taken = new HashSet<string>(existing.Keys, to.IsRemote ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase);
+        var names = to.IsRemote ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
+        var existing = new Dictionary<string, FileEntry>(names);
+        foreach (var e in await to.ListAsync(destinationDirectory, ct).ConfigureAwait(false)) existing.TryAdd(e.Name, e);
+        var taken = new HashSet<string>(existing.Keys, names);
         var conflicts = sources.Count(s => existing.ContainsKey(s.Name));
         ConflictChoice? standing = policy switch
         {
@@ -74,14 +83,15 @@ public sealed class TransferEngine(Func<int> maxParallel)
             }
             conflicts--;
             var keepBothName = UniqueName(taken, source.Name);
+            var question = new ConflictQuestion(source, current, direction, to.DisplayName, keepBothName, conflicts);
             var choice = standing;
-            if (choice is null)
+            if (choice is null || (choice == ConflictChoice.Replace && !question.CanReplace))
             {
-                var answer = await ask(new ConflictQuestion(source, current, direction, to.DisplayName, keepBothName, conflicts)).ConfigureAwait(false);
+                var answer = await ask(question).ConfigureAwait(false);
                 choice = answer.Choice;
-                if (answer.ApplyToRest) standing = answer.Choice;
+                if (answer.ApplyToRest && question.CanReplace) standing = answer.Choice;
             }
-            if (choice == ConflictChoice.Replace && current.IsDirectory != source.IsDirectory) choice = ConflictChoice.KeepBoth;
+            if (choice == ConflictChoice.Replace && !question.CanReplace) choice = ConflictChoice.KeepBoth;
             switch (choice)
             {
                 case ConflictChoice.Cancel:
@@ -150,6 +160,15 @@ public sealed class TransferEngine(Func<int> maxParallel)
         Changed?.Invoke();
     }
 
+    /// <summary>Cancels every unfinished item that reads from or writes to <paramref name="fileSystem"/>; returns how many.</summary>
+    public int CancelAllUsing(IFileSystem fileSystem)
+    {
+        var items = Snapshot().Where(i => (i.From == fileSystem || i.To == fileSystem)
+            && i.Status is TransferStatus.Queued or TransferStatus.Running or TransferStatus.Paused or TransferStatus.Failed).ToList();
+        foreach (var i in items) Cancel(i);
+        return items.Count;
+    }
+
     /// <summary>Pauses or resumes everything at once.</summary>
     public void PauseAll()
     {
@@ -205,6 +224,7 @@ public sealed class TransferEngine(Func<int> maxParallel)
         }
         catch (OperationCanceledException) when (item.PauseRequested)
         {
+            item.ResumablePart = item.CurrentPartPath;
             item.Status = TransferStatus.Paused;
         }
         catch (OperationCanceledException)
@@ -213,6 +233,7 @@ public sealed class TransferEngine(Func<int> maxParallel)
         }
         catch (Exception e)
         {
+            item.ResumablePart = item.CurrentPartPath;
             item.Error = FriendlyError.ForOperation(e);
             item.Status = TransferStatus.Failed;
         }
@@ -311,8 +332,11 @@ public sealed class TransferEngine(Func<int> maxParallel)
         var part = to.Combine(folder, to.IsRemote ? $".{name}.portal-part" : $"{name}.portal-part");
         item.CurrentPartPath = part;
 
-        var partial = await to.StatAsync(part, ct).ConfigureAwait(false);
-        var offset = partial is { IsDirectory: false } && partial.Size <= file.Entry.Size ? partial.Size : 0;
+        var offset = 0L;
+        if (part == item.ResumablePart && await SourceUnchangedAsync(item, file, ct).ConfigureAwait(false)
+            && await to.StatAsync(part, ct).ConfigureAwait(false) is { IsDirectory: false } partial && partial.Size <= file.Entry.Size)
+            offset = partial.Size;
+        item.ResumablePart = null;
         var before = item.BytesDone;
         var progress = new SyncProgress(n => { item.BytesDone = before + offset + n; item.Sample(); });
         progress.Report(0);
@@ -335,6 +359,12 @@ public sealed class TransferEngine(Func<int> maxParallel)
         if (to is IServerFileSystem remote && replaced?.Mode is int mode)
             await BestEffort(() => remote.SetModeAsync(file.DestinationPath, mode, CancellationToken.None)).ConfigureAwait(false);
         item.BytesDone = before + file.Entry.Size;
+    }
+
+    private static async Task<bool> SourceUnchangedAsync(TransferItem item, PlannedFile file, CancellationToken ct)
+    {
+        var now = await item.From.StatAsync(file.SourcePath, ct).ConfigureAwait(false);
+        return now is not null && now.Size == file.Entry.Size && now.ModifiedUtc == file.Entry.ModifiedUtc;
     }
 
     private static async Task BestEffort(Func<Task> action)

@@ -158,9 +158,19 @@ public sealed partial class TransfersViewModel : ObservableObject
 
     internal async Task RetryAsync(TransferItem item)
     {
-        if (EnsureConnected is { } ensure) await ensure();
-        Engine.Resume(item);
+        try
+        {
+            if (EnsureConnected is { } ensure) await ensure();
+            Engine.Resume(item);
+        }
+        catch (Exception e)
+        {
+            ReportError?.Invoke("Couldn’t retry the transfer", Portal.Core.Connections.FriendlyError.ForOperation(e));
+        }
     }
+
+    /// <summary>Shows an error to the user.</summary>
+    public Action<string, string>? ReportError { get; set; }
 
     [RelayCommand]
     private void Toggle() => IsOpen = !IsOpen;

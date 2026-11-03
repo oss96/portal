@@ -39,6 +39,12 @@ public partial class App : Application
         var (target, port) = CommandLine.Parse(e.Args);
         var store = SettingsStore.Default;
         var main = new MainViewModel(store);
+        DispatcherUnhandledException += (_, args) =>
+        {
+            args.Handled = true;
+            main.Toasts.Show(ToastKind.Error, "Something went wrong", Core.Connections.FriendlyError.ForOperation(args.Exception));
+        };
+        TaskScheduler.UnobservedTaskException += (_, args) => args.SetObserved();
         ApplyTheme(main.Preferences.Theme);
         var window = new MainWindow(main, store);
         MainWindow = window;

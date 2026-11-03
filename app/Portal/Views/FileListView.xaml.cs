@@ -69,7 +69,7 @@ public partial class FileListView : UserControl
     {
         if (e.PropertyName == nameof(PaneViewModel.IsActive) && _pane is not null)
             ActiveBar.Visibility = _pane.IsActive && Browser is { ShowLocalPane: true } ? Visibility.Visible : Visibility.Collapsed;
-        if (e.PropertyName == nameof(PaneViewModel.Path)) Dispatcher.InvokeAsync(() => CrumbScroll.ScrollToRightEnd(), DispatcherPriority.Loaded);
+        if (e.PropertyName == nameof(PaneViewModel.Path)) Dispatcher.InvokeAsync(SnapCrumbs, DispatcherPriority.Loaded);
     }
 
     private void OnSelectRequested(IReadOnlyCollection<string> names, bool rename)
@@ -325,7 +325,26 @@ public partial class FileListView : UserControl
         FocusList();
     }
 
-    private void OnCrumbsSized(object sender, SizeChangedEventArgs e) => CrumbScroll.ScrollToRightEnd();
+    private void OnCrumbsSized(object sender, SizeChangedEventArgs e) => SnapCrumbs();
+
+    private void SnapCrumbs()
+    {
+        var containers = Enumerable.Range(0, CrumbItems.Items.Count).Select(i => CrumbItems.ItemContainerGenerator.ContainerFromIndex(i) as FrameworkElement).ToList();
+        if (containers.Count == 0 || containers.Any(c => c is null)) return;
+        var widths = new List<double>();
+        foreach (var c in containers)
+        {
+            c!.Visibility = Visibility.Visible;
+            c.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            widths.Add(c.DesiredSize.Width);
+        }
+        var available = CrumbScroll.ActualWidth - 8;
+        var total = widths.Sum();
+        var hidden = 0;
+        while (total + (hidden > 0 ? 24 : 0) > available && hidden < containers.Count - 1) total -= widths[hidden++];
+        for (var i = 0; i < hidden; i++) containers[i]!.Visibility = Visibility.Collapsed;
+        CrumbEllipsis.Visibility = hidden > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
 
     private void OnCrumbsClick(object sender, MouseButtonEventArgs e)
     {

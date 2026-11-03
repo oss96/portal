@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net.Sockets;
 using Portal.Core.Ssh;
 using Renci.SshNet;
 using Renci.SshNet.Common;
@@ -38,18 +39,22 @@ public static class SshConnector
         browse.OperationTimeout = TimeSpan.FromMinutes(2);
 
         stage.Report(ConnectStage.OpeningFiles);
-        var transfer = new SftpClient(credentials.ConnectionInfo(target, NormalTimeout)) { KeepAliveInterval = KeepAlive, OperationTimeout = TimeSpan.FromMinutes(5) };
-        var shell = new SshClient(credentials.ConnectionInfo(target, NormalTimeout)) { KeepAliveInterval = KeepAlive };
+        var recorded = knownHosts.RecordedKeyTypes(target.HostName, target.Port);
+        var transfer = new SftpClient(credentials.ConnectionInfo(target, NormalTimeout, recorded)) { KeepAliveInterval = KeepAlive, OperationTimeout = TimeSpan.FromMinutes(5) };
+        var shell = new SshClient(credentials.ConnectionInfo(target, NormalTimeout, recorded)) { KeepAliveInterval = KeepAlive };
         var strict = new HostKeyVerifier(knownHosts, target, prompts, allowPrompt: false, stage);
         transfer.HostKeyReceived += strict.OnHostKey;
         shell.HostKeyReceived += strict.OnHostKey;
         try
         {
-            await Task.WhenAll(transfer.ConnectAsync(ct), shell.ConnectAsync(ct)).ConfigureAwait(false);
-            var namesOutput = await new RemoteShell(shell).RunAsync(AccountNames.ReadCommand, ct).ConfigureAwait(false);
+            await transfer.ConnectAsync(ct).ConfigureAwait(false);
+            var remoteShell = await OpenShellAsync(shell, ct).ConfigureAwait(false);
+            var names = remoteShell.IsAvailable
+                ? AccountNames.Parse((await remoteShell.RunAsync(AccountNames.ReadCommand, ct).ConfigureAwait(false)).Output)
+                : AccountNames.Empty;
             var latency = await MeasureLatencyAsync(browse, ct).ConfigureAwait(false);
             profile.LastConnectedUtc = DateTime.UtcNow;
-            return new RemoteSession(profile, target.HostName, target.Port, target.User, browse, transfer, shell, AccountNames.Parse(namesOutput.Output), latency);
+            return new RemoteSession(profile, target.HostName, target.Port, target.User, browse, transfer, shell, remoteShell, names, latency);
         }
         catch
         {
@@ -57,6 +62,27 @@ public static class SshConnector
             throw;
         }
     }
+
+    /// <summary>Opens the command channel and checks it really runs commands; accounts limited to SFTP get an unavailable shell.</summary>
+    internal static async Task<RemoteShell> OpenShellAsync(SshClient client, CancellationToken ct)
+    {
+        try
+        {
+            if (!client.IsConnected) await client.ConnectAsync(ct).ConfigureAwait(false);
+            var probe = new RemoteShell(client);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(ShellProbeTimeout);
+            var r = await probe.RunAsync($"echo {ShellProbe}", timeout.Token).ConfigureAwait(false);
+            return r.Output.Trim() == ShellProbe ? probe : RemoteShell.Unavailable;
+        }
+        catch (Exception e) when (e is SshException or OperationCanceledException or SocketException or TimeoutException && !ct.IsCancellationRequested)
+        {
+            return RemoteShell.Unavailable;
+        }
+    }
+
+    private const string ShellProbe = "portal-shell-ok";
+    private static readonly TimeSpan ShellProbeTimeout = TimeSpan.FromSeconds(8);
 
     internal static async Task<TimeSpan> MeasureLatencyAsync(SftpClient client, CancellationToken ct)
     {
@@ -69,7 +95,7 @@ public static class SshConnector
     {
         while (true)
         {
-            var client = new SftpClient(credentials.ConnectionInfo(target, PromptTimeout)) { KeepAliveInterval = KeepAlive };
+            var client = new SftpClient(credentials.ConnectionInfo(target, PromptTimeout, knownHosts.RecordedKeyTypes(target.HostName, target.Port))) { KeepAliveInterval = KeepAlive };
             var verifier = new HostKeyVerifier(knownHosts, target, prompts, allowPrompt: true, stage);
             client.HostKeyReceived += verifier.OnHostKey;
             try
@@ -117,6 +143,10 @@ public static class SshConnector
                     e.CanTrust = true;
                     break;
                 case HostKeyStatus.Changed:
+                    Changed = info;
+                    e.CanTrust = false;
+                    break;
+                case HostKeyStatus.Unknown when knownHosts.RecordedKeyTypes(target.HostName, target.Port).Count > 0:
                     Changed = info;
                     e.CanTrust = false;
                     break;
@@ -190,7 +220,16 @@ public static class SshConnector
             }
         }
 
-        public ConnectionInfo ConnectionInfo(Target target, TimeSpan timeout)
+        public ConnectionInfo ConnectionInfo(Target target, TimeSpan timeout, IReadOnlySet<string> recordedKeyTypes)
+        {
+            var info = Build(target, timeout);
+            if (recordedKeyTypes.Count == 0) return info;
+            foreach (var algorithm in info.HostKeyAlgorithms.Keys.ToList())
+                if (!recordedKeyTypes.Contains(KnownHosts.NormalizeKeyType(algorithm))) info.HostKeyAlgorithms.Remove(algorithm);
+            return info;
+        }
+
+        private ConnectionInfo Build(Target target, TimeSpan timeout)
         {
             var methods = new List<AuthenticationMethod>();
             if (_password is { } pw)

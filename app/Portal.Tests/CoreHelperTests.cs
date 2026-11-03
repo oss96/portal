@@ -107,3 +107,34 @@ public sealed class ServerOutputParsingTests
         Assert.Equal(@"report\[1\]\*", RemoteFileSystem.EscapeGlob("report[1]*"));
     }
 }
+
+public sealed class PermissionDeltaTests
+{
+    [Fact]
+    public void Only_the_changed_bits_are_applied()
+    {
+        var delta = PermissionDelta.Between(0x1ED, 0x1FD);
+        Assert.Equal("g+w", delta.ToChmod());
+        Assert.Equal(0x1D0, delta.ApplyTo(0x1C0));
+        Assert.Equal(0x1B4, delta.ApplyTo(0x1A4));
+    }
+
+    [Fact]
+    public void Removals_and_special_bits_are_spelled_out()
+    {
+        Assert.Equal("u+x,g+x,g-w,o-rw", PermissionDelta.Between(0x1B6, 0x1E8).ToChmod());
+        Assert.Equal("u+s,o+t", PermissionDelta.Between(0x1ED, 0xBED).ToChmod());
+        Assert.True(PermissionDelta.Between(0x1A4, 0x1A4).IsEmpty);
+    }
+}
+
+public sealed class ServerCopyNameTests
+{
+    [Fact]
+    public void Copies_are_named_like_explorer_does()
+    {
+        Assert.Equal("report - Copy.pdf", ServerCopy.CopyName(new HashSet<string> { "report.pdf" }, "report.pdf"));
+        Assert.Equal("report - Copy (2).pdf", ServerCopy.CopyName(new HashSet<string> { "report.pdf", "report - Copy.pdf" }, "report.pdf"));
+        Assert.Equal("site - Copy", ServerCopy.CopyName(new HashSet<string> { "site" }, "site"));
+    }
+}

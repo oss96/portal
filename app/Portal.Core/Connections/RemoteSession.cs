@@ -9,9 +9,10 @@ public sealed class RemoteSession : IServerSession
     private readonly SftpClient _browse;
     private readonly SftpClient _transfer;
     private readonly SshClient _shell;
+    private readonly bool _hasShell;
     private int _lost;
 
-    internal RemoteSession(ServerProfile profile, string hostName, int port, string user, SftpClient browse, SftpClient transfer, SshClient shell, AccountNames names, TimeSpan latency)
+    internal RemoteSession(ServerProfile profile, string hostName, int port, string user, SftpClient browse, SftpClient transfer, SshClient shell, RemoteShell remoteShell, AccountNames names, TimeSpan latency)
     {
         Profile = profile;
         HostName = hostName;
@@ -21,7 +22,7 @@ public sealed class RemoteSession : IServerSession
         _transfer = transfer;
         _shell = shell;
         Latency = latency;
-        var remoteShell = new RemoteShell(shell);
+        _hasShell = remoteShell.IsAvailable;
         Files = new RemoteFileSystem(profile.Name, browse, remoteShell, names);
         TransferFiles = new RemoteFileSystem(profile.Name, transfer, remoteShell, names);
         foreach (var c in new BaseClient[] { browse, transfer, shell }) c.ErrorOccurred += (_, _) => OnLost();
@@ -49,7 +50,7 @@ public sealed class RemoteSession : IServerSession
     public IServerFileSystem TransferFiles { get; }
 
     /// <summary>True while all three channels are up.</summary>
-    public bool IsConnected => _browse.IsConnected && _transfer.IsConnected && _shell.IsConnected;
+    public bool IsConnected => _browse.IsConnected && _transfer.IsConnected && (!_hasShell || _shell.IsConnected);
 
     /// <summary>Raised once when a channel drops.</summary>
     public event EventHandler? ConnectionLost;
@@ -57,7 +58,7 @@ public sealed class RemoteSession : IServerSession
     /// <summary>Opens dropped channels again with the same credentials.</summary>
     public async Task ReconnectAsync(CancellationToken ct)
     {
-        foreach (var c in new BaseClient[] { _browse, _transfer, _shell })
+        foreach (var c in _hasShell ? new BaseClient[] { _browse, _transfer, _shell } : [_browse, _transfer])
         {
             if (c.IsConnected) continue;
             try { c.Disconnect(); } catch (Exception) { }

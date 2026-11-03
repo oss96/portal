@@ -82,7 +82,8 @@
                         </StackPanel>
                     </Border>
                 </UniformGrid>
-                <Button Style="{StaticResource ChoiceButton}" Command="{Binding ChooseCommand}" CommandParameter="{x:Static tr:ConflictChoice.Replace}">
+                <TextBlock Text="{Binding NoReplaceReason}" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,0,0,8" Visibility="{Binding NoReplaceReason, Converter={StaticResource VisibleIfSet}}" />
+                <Button Style="{StaticResource ChoiceButton}" Command="{Binding ChooseCommand}" CommandParameter="{x:Static tr:ConflictChoice.Replace}" Visibility="{Binding CanReplace, Converter={StaticResource Visible}}">
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="28" />
@@ -135,7 +136,8 @@
     <DataTemplate DataType="{x:Type vm:PermissionsDialogViewModel}">
         <StackPanel>
             <StackPanel Style="{StaticResource DialogBody}">
-                <TextBlock Text="{Binding Title}" Style="{StaticResource Subtitle}" Margin="0,0,0,16" />
+                <TextBlock Text="{Binding Title}" Style="{StaticResource Subtitle}" Margin="0,0,0,8" />
+                <TextBlock Text="{Binding Hint}" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,0,0,16" />
                 <Grid Margin="0,0,0,16">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />

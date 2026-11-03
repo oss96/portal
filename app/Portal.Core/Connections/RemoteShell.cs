@@ -10,12 +10,26 @@ public sealed record CommandResult(int ExitCode, string Output, string Error)
 }
 
 /// <summary>Runs commands on the server over an SSH exec channel.</summary>
-public sealed class RemoteShell(SshClient client)
+public sealed class RemoteShell
 {
+    private readonly SshClient? _client;
+
+    /// <summary>A shell over an open SSH client.</summary>
+    public RemoteShell(SshClient client) => _client = client;
+
+    private RemoteShell() => _client = null;
+
+    /// <summary>The shell of an account that may only use SFTP.</summary>
+    public static RemoteShell Unavailable { get; } = new();
+
+    /// <summary>False for accounts limited to SFTP, where server-side commands can't run.</summary>
+    public bool IsAvailable => _client is not null;
+
     /// <summary>Runs a command line that the caller built with <c>PosixShell.Quote</c>.</summary>
     public async Task<CommandResult> RunAsync(string commandLine, CancellationToken ct)
     {
-        using var cmd = client.CreateCommand(commandLine);
+        if (_client is null) throw new ShellUnavailableException();
+        using var cmd = _client.CreateCommand(commandLine);
         cmd.CommandTimeout = TimeSpan.FromHours(6);
         await cmd.ExecuteAsync(ct).ConfigureAwait(false);
         return new CommandResult(cmd.ExitStatus ?? -1, cmd.Result, cmd.Error);
@@ -37,3 +51,7 @@ public sealed class RemoteCommandException(CommandResult result)
     /// <summary>The failed command's output.</summary>
     public CommandResult Result { get; } = result;
 }
+
+/// <summary>The account may only use SFTP, so a server-side command can't run.</summary>
+public sealed class ShellUnavailableException()
+    : NotSupportedException("This account may only transfer files (SFTP only), so Portal can’t run this on the server.");
