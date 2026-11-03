@@ -102,7 +102,7 @@ public sealed partial class BrowserViewModel : ObservableObject, IDisposable
     public string ConnectionText => IsConnectionLost ? $"Connection to {ServerName} lost" : $"Connected to {ServerName} as {Session.User}";
 
     /// <summary>"tower:22 · 14 ms".</summary>
-    public string ConnectionDetail => $"{Session.HostName}{(Session.Port == 22 ? "" : ":" + Session.Port)} · {Math.Max(1, Math.Round(Session.Latency.TotalMilliseconds))} ms";
+    public string ConnectionDetail => $"{Session.HostName}{(Session.Port == 22 ? "" : ":" + Session.Port)} · {Math.Max(1, Math.Round(Session.Latency.TotalMilliseconds))} ms{(Session.Files.CanRunCommands ? "" : " · SFTP only")}";
 
     /// <summary>Text of the storage section header.</summary>
     public string StorageHeader => $"Storage on {ServerName}";
@@ -137,6 +137,9 @@ public sealed partial class BrowserViewModel : ObservableObject, IDisposable
         await BuildPlacesAsync();
         _ = LoadDisksAsync();
         Remote.Focus();
+        if (!Session.Files.CanRunCommands)
+            Main.Toasts.Show(ToastKind.Info, $"{ServerName} allows file transfers only",
+                "Browsing, uploads, downloads, renames and permissions work. Search, disk space, copying on the server and changing owners need an account that can run commands.");
     }
 
     /// <summary>Reconnects before a retry when the connection dropped.</summary>
@@ -436,8 +439,7 @@ public sealed partial class BrowserViewModel : ObservableObject, IDisposable
                 return;
             }
             if (!target.IsRemote) return;
-            if (c.Cut) _clipboard = null;
-            await CopyOnServerAsync(c.Entries, target.Path, move: c.Cut);
+            if (await CopyOnServerAsync(c.Entries, target.Path, move: c.Cut) && c.Cut) _clipboard = null;
             return;
         }
         if (target.IsRemote && Clipboard.ContainsFileDropList())
@@ -588,24 +590,27 @@ public sealed partial class BrowserViewModel : ObservableObject, IDisposable
         });
     }
 
-    private async Task CopyOnServerAsync(IReadOnlyList<FileEntry> entries, string folder, bool move)
+    private async Task<bool> CopyOnServerAsync(IReadOnlyList<FileEntry> entries, string folder, bool move)
     {
-        if (entries.Count == 0) return;
+        if (entries.Count == 0) return false;
         if (!Session.Files.CanRunCommands && !move)
         {
             Main.Toasts.Show(ToastKind.Error, "Can’t copy on this server", "This account may only transfer files (SFTP only). Download and upload the files instead.");
-            return;
+            return false;
         }
+        var completed = false;
         await RunAsync(move ? "Couldn’t move everything" : "Couldn’t copy everything", async () =>
         {
             var result = await ServerCopy.RunAsync(Session.Files, entries, folder, move, Main.Preferences.Conflicts,
                 q => Main.Dialogs.ShowAsync(new ConflictDialogViewModel(q)), CancellationToken.None);
+            completed = !result.Stopped;
             if (Remote.Path == folder) await Remote.RefreshAsync(result.Placed);
             else await Remote.RefreshAsync();
             if (result.Placed.Count == 0) return;
             var skipped = result.Skipped > 0 ? $" · {Formatting.Count(result.Skipped, "item")} skipped" : "";
             Main.Toasts.Show(ToastKind.Success, $"{(move ? "Moved" : "Copied")} {Formatting.Count(result.Placed.Count, "item")} on {ServerName}", folder + skipped);
         });
+        return completed;
     }
 
     private async Task EditOnServerAsync(EntryViewModel entry)

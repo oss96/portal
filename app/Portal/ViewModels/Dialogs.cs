@@ -151,7 +151,7 @@ public sealed partial class PermissionsDialogViewModel : DialogViewModel<Permiss
         HasFolders = entries.Any(e => e.IsDirectory);
         Hint = entries.Count == 1 && !HasFolders
             ? "Ticks show the current permissions."
-            : $"Ticks show “{first.Name}”. Only the boxes you change are applied; everything else keeps its own permissions.";
+            : $"Ticks show “{first.Name}”. Only the boxes you change are applied; everything else keeps its own permissions. Type a number to set exactly that on every item.";
         Owners = [.. accounts.UserNames.Union(first.Owner is null ? [] : [first.Owner]).Order(StringComparer.Ordinal)];
         Groups = [.. accounts.GroupNames.Union(first.Group is null ? [] : [first.Group]).Order(StringComparer.Ordinal)];
         string[] who = ["Owner", "Group", "Everyone"];
@@ -200,7 +200,13 @@ public sealed partial class PermissionsDialogViewModel : DialogViewModel<Permiss
 
     partial void OnModeChanged(int value)
     {
-        if (!Permissions.TryParseOctal(OctalText, out var typed) || typed != value) OctalText = Permissions.ToOctal(value);
+        if (!_fromText) _exact = false;
+        if (!Permissions.TryParseOctal(OctalText, out var typed) || typed != value)
+        {
+            _syncing = true;
+            OctalText = Permissions.ToOctal(value);
+            _syncing = false;
+        }
         foreach (var r in Rows ?? [])
         {
             r.Read.Refresh();
@@ -211,15 +217,24 @@ public sealed partial class PermissionsDialogViewModel : DialogViewModel<Permiss
 
     partial void OnOctalTextChanged(string value)
     {
-        if (Permissions.TryParseOctal(value, out var m) && m != Mode) Mode = m;
+        if (_syncing || !Permissions.TryParseOctal(value, out var m)) return;
+        _exact = true;
+        _fromText = true;
+        Mode = m;
+        _fromText = false;
     }
+
+    private bool _exact;
+    private bool _syncing;
+    private bool _fromText;
 
     [RelayCommand]
     private void Apply()
     {
         var owner = Owner != _originalOwner ? Owner : null;
         var group = Group != _originalGroup ? Group : null;
-        Close(new PermissionChange(PermissionDelta.Between(_originalMode, Mode), owner, group, Recursive));
+        var delta = _exact ? new PermissionDelta(Mode, 0xFFF & ~Mode) : PermissionDelta.Between(_originalMode, Mode);
+        Close(new PermissionChange(delta, owner, group, Recursive));
     }
 
     [RelayCommand]

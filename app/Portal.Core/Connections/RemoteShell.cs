@@ -55,3 +55,7 @@ public sealed class RemoteCommandException(CommandResult result)
 /// <summary>The account may only use SFTP, so a server-side command can't run.</summary>
 public sealed class ShellUnavailableException()
     : NotSupportedException("This account may only transfer files (SFTP only), so Portal can’t run this on the server.");
+
+/// <summary>A delete, rename or move would touch a symbolic link, which SFTP follows to its target.</summary>
+public sealed class SymlinkDeleteException(string path)
+    : NotSupportedException($"“{path}” is a symbolic link. This account may only use SFTP, which would act on what the link points to, so Portal left everything as it was.");

@@ -66,6 +66,9 @@ public sealed class SshServerFixture : IAsyncLifetime
     /// <summary>Runs a command inside the container as the test user.</summary>
     public Task<string> Exec(string command) => Run("docker", "exec", "-u", User, _container!, "sh", "-c", command);
 
+    /// <summary>Runs a command inside the SFTP-only container as the test user.</summary>
+    public Task<string> ExecSftpOnly(string command) => Run("docker", "exec", "-u", User, _sftpOnlyContainer!, "sh", "-c", command);
+
     private async Task<(string Container, int Port)> StartContainerAsync(string publicKey)
     {
         var container = (await Run("docker", "run", "-d", "--rm", "-p", "127.0.0.1::2222",

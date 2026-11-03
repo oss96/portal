@@ -155,6 +155,63 @@ public sealed class SshIntegrationTests(SshServerFixture server) : IDisposable
     }
 
     [SshFact]
+    public async Task Symlinks_are_never_followed_when_deleting_renaming_or_moving()
+    {
+        var sftpOnly = new ServerProfile { Name = "SFTP only", Host = "127.0.0.1", Port = server.SftpOnlyPort, User = server.User };
+        await using (var session = await SshConnector.ConnectAsync(sftpOnly, new Prompts(), new Progress<ConnectStage>(), default))
+        {
+            var fs = session.Files;
+            var home = fs.HomeDirectory;
+            await server.ExecSftpOnly($"cd {home} && rm -rf links && mkdir -p links/target links/box && echo keep > links/real.txt && echo inside > links/target/f.txt && ln -s real.txt links/filelink && ln -s target links/dirlink && ln -s ../real.txt links/box/inner");
+            var links = RemotePath.Combine(home, "links");
+            await Assert.ThrowsAsync<SymlinkDeleteException>(() => fs.DeleteAsync([RemotePath.Combine(links, "filelink")], default));
+            await Assert.ThrowsAsync<SymlinkDeleteException>(() => fs.DeleteAsync([RemotePath.Combine(links, "dirlink")], default));
+            await Assert.ThrowsAsync<SymlinkDeleteException>(() => fs.DeleteAsync([RemotePath.Combine(links, "box")], default));
+            await Assert.ThrowsAsync<SymlinkDeleteException>(() => fs.RenameAsync(RemotePath.Combine(links, "filelink"), RemotePath.Combine(links, "renamed"), overwrite: false, default));
+            Assert.Equal("keep", (await server.ExecSftpOnly($"cat {home}/links/real.txt")).Trim());
+            Assert.Equal("inside", (await server.ExecSftpOnly($"cat {home}/links/target/f.txt")).Trim());
+            Assert.NotNull(await fs.StatAsync(RemotePath.Combine(links, "box"), default));
+        }
+
+        await using (var session = await SshConnector.ConnectAsync(Profile(), new Prompts(), new Progress<ConnectStage>(), default))
+        {
+            var fs = session.Files;
+            var home = fs.HomeDirectory;
+            var links = RemotePath.Combine(home, "links");
+            await server.Exec($"cd {home} && rm -rf links && mkdir -p links/target links/dest && echo keep > links/real.txt && ln -s real.txt links/filelink && ln -s target links/dirlink");
+            await fs.RenameAsync(RemotePath.Combine(links, "filelink"), RemotePath.Combine(links, "renamed"), overwrite: false, default);
+            Assert.Equal("real.txt", (await server.Exec($"readlink {home}/links/renamed")).Trim());
+            Assert.Equal("keep", (await server.Exec($"cat {home}/links/real.txt")).Trim());
+            var dirlink = (await fs.ListAsync(links, default)).Single(e => e.Name == "dirlink");
+            await ServerCopy.RunAsync(fs, [dirlink], RemotePath.Combine(links, "dest"), move: true, ConflictPolicy.Ask, _ => throw new InvalidOperationException(), default);
+            Assert.Equal("target", (await server.Exec($"readlink {home}/links/dest/dirlink")).Trim());
+            Assert.Equal("", (await server.Exec($"test -d {home}/links/target && echo -n")).Trim());
+            await fs.DeleteAsync([RemotePath.Combine(links, "renamed")], default);
+            Assert.Equal("keep", (await server.Exec($"cat {home}/links/real.txt")).Trim());
+            await fs.DeleteAsync([links], default);
+        }
+    }
+
+    [SshFact]
+    public async Task A_server_without_the_recorded_key_type_reads_as_a_changed_identity()
+    {
+        var path = Path.Combine(server.SshDirectory, "known_hosts");
+        var dss = Convert.ToBase64String(new byte[] { 0, 0, 0, 7 }.Concat("ssh-dss"u8.ToArray()).Concat(new byte[16]).ToArray());
+        await File.WriteAllTextAsync(path, $"[127.0.0.1]:{server.Port} ssh-dss {dss}\n");
+        try
+        {
+            var prompts = new Prompts();
+            var e = await Assert.ThrowsAsync<HostKeyTypeMismatchException>(() => SshConnector.ConnectAsync(Profile(), prompts, new Progress<ConnectStage>(), default));
+            Assert.Equal(0, prompts.TrustQuestions);
+            Assert.Contains("identity changed", FriendlyError.ForConnect(e, "127.0.0.1", server.Port, server.User).Title);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [SshFact]
     public async Task A_key_of_a_type_not_on_record_is_treated_as_changed()
     {
         var path = Path.Combine(server.SshDirectory, "known_hosts");

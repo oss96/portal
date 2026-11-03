@@ -77,8 +77,9 @@ public sealed class TransferEngine(Func<int> maxParallel)
         {
             if (!existing.TryGetValue(source.Name, out var current))
             {
-                planned.Add((source, source.Name, false));
-                taken.Add(source.Name);
+                var name = taken.Contains(source.Name) ? UniqueName(taken, source.Name) : source.Name;
+                planned.Add((source, name, false));
+                taken.Add(name);
                 continue;
             }
             conflicts--;
@@ -160,12 +161,15 @@ public sealed class TransferEngine(Func<int> maxParallel)
         Changed?.Invoke();
     }
 
-    /// <summary>Cancels every unfinished item that reads from or writes to <paramref name="fileSystem"/>; returns how many.</summary>
-    public int CancelAllUsing(IFileSystem fileSystem)
+    /// <summary>Cancels every unfinished item that reads from or writes to <paramref name="fileSystem"/>, waits up to <paramref name="cleanup"/> for their partial files to be removed, and returns how many.</summary>
+    public async Task<int> CancelAllUsingAsync(IFileSystem fileSystem, TimeSpan cleanup)
     {
         var items = Snapshot().Where(i => (i.From == fileSystem || i.To == fileSystem)
             && i.Status is TransferStatus.Queued or TransferStatus.Running or TransferStatus.Paused or TransferStatus.Failed).ToList();
         foreach (var i in items) Cancel(i);
+        var deadline = DateTime.UtcNow + cleanup;
+        while (DateTime.UtcNow < deadline && items.Any(i => i.Status != TransferStatus.Cancelled || i.CurrentPartPath is not null))
+            await Task.Delay(50).ConfigureAwait(false);
         return items.Count;
     }
 
@@ -305,9 +309,12 @@ public sealed class TransferEngine(Func<int> maxParallel)
         while (pending.Count > 0)
         {
             var (src, dst) = pending.Pop();
+            var names = new HashSet<string>(item.To.IsRemote ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase);
             foreach (var e in await item.From.ListAsync(src, ct).ConfigureAwait(false))
             {
-                var target = item.To.Combine(dst, e.Name);
+                var name = names.Contains(e.Name) ? UniqueName(names, e.Name) : e.Name;
+                names.Add(name);
+                var target = item.To.Combine(dst, name);
                 switch (e.Kind)
                 {
                     case EntryKind.Directory:

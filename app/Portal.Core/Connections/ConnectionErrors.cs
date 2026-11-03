@@ -11,6 +11,20 @@ public sealed class HostKeyChangedException(HostKeyInfo key)
     public HostKeyInfo Key { get; } = key;
 }
 
+/// <summary>A known server no longer offers any of the key types saved for it in known_hosts.</summary>
+public sealed class HostKeyTypeMismatchException(string host, IReadOnlyList<string> recordedTypes, string knownHostsPath)
+    : Exception($"{host} no longer offers the kind of key saved for it.")
+{
+    /// <summary>The server's address.</summary>
+    public string Host { get; } = host;
+
+    /// <summary>Key types saved for the server.</summary>
+    public IReadOnlyList<string> RecordedTypes { get; } = recordedTypes;
+
+    /// <summary>The known_hosts file.</summary>
+    public string KnownHostsPath { get; } = knownHostsPath;
+}
+
 /// <summary>The user declined a prompt during connect.</summary>
 public sealed class ConnectCancelledException() : OperationCanceledException("Connecting was cancelled.");
 
@@ -25,6 +39,8 @@ public static class FriendlyError
         {
             HostKeyChangedException h => ($"{host}’s identity changed",
                 $"The server now presents {h.Key.KeyType} key {h.Key.Fingerprint}, which doesn’t match the one saved in {h.Key.KnownHostsPath}. If the server was reinstalled, remove its old line from that file and connect again. Otherwise, don’t connect."),
+            HostKeyTypeMismatchException m => ($"{host}’s identity changed",
+                $"The server no longer offers a {string.Join(" or ", m.RecordedTypes)} key, which is what {m.KnownHostsPath} has saved for it. If the server was reinstalled or its SSH keys changed, remove its old line from that file and connect again. Otherwise, don’t connect."),
             SocketException { SocketErrorCode: SocketError.HostNotFound or SocketError.NoData or SocketError.TryAgain } =>
                 ($"Couldn’t find “{host}”", "Check the address, or make sure this PC is on the same network or connected to Tailscale."),
             SocketException { SocketErrorCode: SocketError.ConnectionRefused } =>

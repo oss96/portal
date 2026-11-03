@@ -229,7 +229,7 @@ public sealed partial class MainViewModel : ObservableObject, IConnectPrompts
 
     private async Task CloseBrowserAsync(BrowserViewModel browser)
     {
-        var cancelled = Transfers.Engine.CancelAllUsing(browser.Session.TransferFiles);
+        var cancelled = await Transfers.Engine.CancelAllUsingAsync(browser.Session.TransferFiles, TimeSpan.FromSeconds(5));
         if (cancelled > 0) Toasts.Show(ToastKind.Info, $"Cancelled {Formatting.Count(cancelled, "transfer")}", $"They belonged to the connection to {browser.Session.Profile.Name}.");
         Browser = null;
         Transfers.EnsureConnected = null;

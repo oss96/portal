@@ -66,18 +66,25 @@ public static class SshConnector
     /// <summary>Opens the command channel and checks it really runs commands; accounts limited to SFTP get an unavailable shell.</summary>
     internal static async Task<RemoteShell> OpenShellAsync(SshClient client, CancellationToken ct)
     {
-        try
+        for (var attempt = 1; ; attempt++)
         {
-            if (!client.IsConnected) await client.ConnectAsync(ct).ConfigureAwait(false);
-            var probe = new RemoteShell(client);
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(ShellProbeTimeout);
-            var r = await probe.RunAsync($"echo {ShellProbe}", timeout.Token).ConfigureAwait(false);
-            return r.Output.Trim() == ShellProbe ? probe : RemoteShell.Unavailable;
-        }
-        catch (Exception e) when (e is SshException or OperationCanceledException or SocketException or TimeoutException && !ct.IsCancellationRequested)
-        {
-            return RemoteShell.Unavailable;
+            try
+            {
+                if (!client.IsConnected) await client.ConnectAsync(ct).ConfigureAwait(false);
+                var probe = new RemoteShell(client);
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeout.CancelAfter(ShellProbeTimeout);
+                var r = await probe.RunAsync($"echo {ShellProbe}", timeout.Token).ConfigureAwait(false);
+                return r.Output.Trim() == ShellProbe ? probe : RemoteShell.Unavailable;
+            }
+            catch (Exception e) when (e is SshException or SocketException or TimeoutException && !ct.IsCancellationRequested && attempt < 2)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false);
+            }
+            catch (Exception e) when (e is SshException or OperationCanceledException or SocketException or TimeoutException && !ct.IsCancellationRequested)
+            {
+                return RemoteShell.Unavailable;
+            }
         }
     }
 
@@ -95,7 +102,8 @@ public static class SshConnector
     {
         while (true)
         {
-            var client = new SftpClient(credentials.ConnectionInfo(target, PromptTimeout, knownHosts.RecordedKeyTypes(target.HostName, target.Port))) { KeepAliveInterval = KeepAlive };
+            var recorded = knownHosts.RecordedKeyTypes(target.HostName, target.Port);
+            var client = new SftpClient(credentials.ConnectionInfo(target, PromptTimeout, recorded)) { KeepAliveInterval = KeepAlive };
             var verifier = new HostKeyVerifier(knownHosts, target, prompts, allowPrompt: true, stage);
             client.HostKeyReceived += verifier.OnHostKey;
             try
@@ -112,6 +120,11 @@ public static class SshConnector
             {
                 client.Dispose();
                 throw new HostKeyChangedException(changed);
+            }
+            catch (SshConnectionException) when (!verifier.SawKey && recorded.Count > 0)
+            {
+                client.Dispose();
+                throw new HostKeyTypeMismatchException(target.HostName, [.. recorded], knownHosts.Path);
             }
             catch (Exception) when (verifier.Declined)
             {
@@ -133,8 +146,11 @@ public static class SshConnector
 
         public bool Declined { get; private set; }
 
+        public bool SawKey { get; private set; }
+
         public void OnHostKey(object? sender, HostKeyEventArgs e)
         {
+            SawKey = true;
             stage.Report(ConnectStage.VerifyingIdentity);
             var info = new HostKeyInfo(target.HostName, target.Port, e.HostKeyName, KnownHosts.Fingerprint(e.HostKey), knownHosts.Path);
             switch (knownHosts.Check(target.HostName, target.Port, e.HostKeyName, e.HostKey))

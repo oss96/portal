@@ -67,6 +67,12 @@ public sealed partial class PaletteViewModel : ObservableObject
         Rebuild();
         _search?.Cancel();
         if (value.Trim().Length < 2 || value.StartsWith('/')) return;
+        if (!_browser.Session.Files.CanRunCommands)
+        {
+            _found = [new PaletteItem("Searching files isn’t available on this server", Glyphs.Info, "SFTP only", () => Task.CompletedTask)];
+            Rebuild();
+            return;
+        }
         var cts = _search = new CancellationTokenSource();
         _ = SearchAsync(value.Trim(), cts.Token);
     }

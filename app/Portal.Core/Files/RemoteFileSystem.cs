@@ -106,9 +106,28 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
     {
         if (!overwrite)
         {
+            if (shell.IsAvailable)
+            {
+                await shell.RunCheckedAsync($"mv -- {PosixShell.Quote(from)} {PosixShell.Quote(to)}", ct).ConfigureAwait(false);
+                return;
+            }
+            await RefuseLinkAsync(from, ct).ConfigureAwait(false);
             await sftp.RenameFileAsync(from, to, ct).ConfigureAwait(false);
             return;
         }
+        await ReplaceWithSftpAsync(from, to, ct).ConfigureAwait(false);
+    }
+
+    private async Task RefuseLinkAsync(string path, CancellationToken ct)
+    {
+        var parent = RemotePath.Parent(path) ?? "/";
+        var name = RemotePath.NameOf(path);
+        await foreach (var f in sftp.ListDirectoryAsync(parent, ct).ConfigureAwait(false))
+            if (f.Name == name && f.IsSymbolicLink) throw new SymlinkDeleteException(path);
+    }
+
+    private async Task ReplaceWithSftpAsync(string from, string to, CancellationToken ct)
+    {
         try
         {
             await Task.Run(() => sftp.RenameFile(from, to, isPosix: true), ct).ConfigureAwait(false);
@@ -130,24 +149,40 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
             await shell.RunCheckedAsync("rm -rf -- " + PosixShell.Join(paths), ct).ConfigureAwait(false);
             return;
         }
-        foreach (var p in paths) await DeleteTreeAsync(p, ct).ConfigureAwait(false);
+        var plans = new List<(List<string> Files, List<string> Folders)>();
+        foreach (var p in paths) plans.Add(await PlanDeleteAsync(RemotePath.Normalize(p), ct).ConfigureAwait(false));
+        foreach (var (files, folders) in plans)
+        {
+            foreach (var f in files) await sftp.DeleteFileAsync(f, ct).ConfigureAwait(false);
+            foreach (var d in folders) await sftp.DeleteDirectoryAsync(d, ct).ConfigureAwait(false);
+        }
     }
 
-    private async Task DeleteTreeAsync(string path, CancellationToken ct)
+    private async Task<(List<string> Files, List<string> Folders)> PlanDeleteAsync(string path, CancellationToken ct)
     {
-        var a = await sftp.GetAttributesAsync(path, ct).ConfigureAwait(false);
-        if (!a.IsDirectory)
+        var parent = RemotePath.Parent(path) ?? "/";
+        var name = RemotePath.NameOf(path);
+        ISftpFile? self = null;
+        await foreach (var f in sftp.ListDirectoryAsync(parent, ct).ConfigureAwait(false))
+            if (f.Name == name) self = f;
+        if (self is null) throw new SftpPathNotFoundException($"“{path}” doesn’t exist.");
+        var files = new List<string>();
+        var folders = new List<string>();
+        await CollectAsync(self, files, folders, ct).ConfigureAwait(false);
+        return (files, folders);
+    }
+
+    private async Task CollectAsync(ISftpFile entry, List<string> files, List<string> folders, CancellationToken ct)
+    {
+        if (entry.IsSymbolicLink) throw new SymlinkDeleteException(entry.FullName);
+        if (!entry.IsDirectory)
         {
-            await sftp.DeleteFileAsync(path, ct).ConfigureAwait(false);
+            files.Add(entry.FullName);
             return;
         }
-        await foreach (var f in sftp.ListDirectoryAsync(path, ct).ConfigureAwait(false))
-        {
-            if (f.Name is "." or "..") continue;
-            if (f.IsDirectory && !f.IsSymbolicLink) await DeleteTreeAsync(f.FullName, ct).ConfigureAwait(false);
-            else await sftp.DeleteFileAsync(f.FullName, ct).ConfigureAwait(false);
-        }
-        await sftp.DeleteDirectoryAsync(path, ct).ConfigureAwait(false);
+        await foreach (var f in sftp.ListDirectoryAsync(entry.FullName, ct).ConfigureAwait(false))
+            if (f.Name is not ("." or "..")) await CollectAsync(f, files, folders, ct).ConfigureAwait(false);
+        folders.Add(entry.FullName);
     }
 
     /// <inheritdoc />
@@ -270,7 +305,13 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
             await shell.RunCheckedAsync($"cp -a -- {PosixShell.Quote(source + "/.")} {PosixShell.Quote(destination + "/")} && rm -rf -- {PosixShell.Quote(source)}", ct).ConfigureAwait(false);
             return;
         }
-        await RenameAsync(source, destination, overwrite: true, ct).ConfigureAwait(false);
+        if (shell.IsAvailable)
+        {
+            await shell.RunCheckedAsync($"mv -f -- {PosixShell.Quote(source)} {PosixShell.Quote(destination)}", ct).ConfigureAwait(false);
+            return;
+        }
+        await RefuseLinkAsync(source, ct).ConfigureAwait(false);
+        await ReplaceWithSftpAsync(source, destination, ct).ConfigureAwait(false);
     }
 
     private async Task<long> SumSizesAsync(string path, CancellationToken ct)

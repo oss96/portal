@@ -185,6 +185,23 @@ public sealed class TransferEngineTests : IDisposable
     }
 
     [Fact]
+    public async Task Server_names_that_differ_only_in_case_get_separate_local_names()
+    {
+        _server.AddFile("/data/a.txt", "lower");
+        _server.AddFile("/data/A.txt", "upper");
+        _server.AddDirectory("/data/pair");
+        _server.AddFile("/data/pair/x.md", "small");
+        _server.AddFile("/data/pair/X.md", "big");
+
+        await RunAsync(_server, [.. (await _server.ListAsync("/data", default)).OrderBy(e => e.Name, StringComparer.Ordinal)], _pc, _local);
+
+        var top = Directory.GetFiles(_local).Select(f => File.ReadAllText(f)).Order().ToList();
+        Assert.Equal(["lower", "upper"], top);
+        var pair = Directory.GetFiles(Path.Combine(_local, "pair")).Select(f => File.ReadAllText(f)).Order().ToList();
+        Assert.Equal(["big", "small"], pair);
+    }
+
+    [Fact]
     public void Unique_name_counts_up_past_taken_names()
     {
         var taken = new HashSet<string> { "a.txt", "a (1).txt" };
