@@ -144,6 +144,7 @@ public sealed class TransferEngine(Func<int> maxParallel)
         {
             if (item.Status is not (TransferStatus.Paused or TransferStatus.Failed)) return;
             item.Resuming = item.BytesDone > 0;
+            item.DestinationListings.Clear();
             item.Error = null;
             item.Status = TransferStatus.Queued;
         }
@@ -344,6 +345,12 @@ public sealed class TransferEngine(Func<int> maxParallel)
         var name = to.NameOf(file.DestinationPath);
         var folder = to.Parent(file.DestinationPath) ?? to.RootPath;
         var part = to.Combine(folder, to.IsRemote ? $".{name}.portal-part" : $"{name}.portal-part");
+        if (to.IsRemote)
+        {
+            var listing = await DestinationListingAsync(item, folder, ct).ConfigureAwait(false);
+            foreach (var n in new[] { name, to.NameOf(part) })
+                if (listing.TryGetValue(n, out var e) && e.IsLink) throw new SymlinkRefusedException(to.Combine(folder, n));
+        }
         item.CurrentPartPath = part;
 
         var offset = 0L;
@@ -373,6 +380,15 @@ public sealed class TransferEngine(Func<int> maxParallel)
         if (to is IServerFileSystem remote && replaced?.Mode is int mode)
             await BestEffort(() => remote.SetModeAsync(file.DestinationPath, mode, CancellationToken.None)).ConfigureAwait(false);
         item.BytesDone = before + file.Entry.Size;
+    }
+
+    private static async Task<Dictionary<string, FileEntry>> DestinationListingAsync(TransferItem item, string folder, CancellationToken ct)
+    {
+        if (item.DestinationListings.TryGetValue(folder, out var cached)) return cached;
+        var listing = new Dictionary<string, FileEntry>(StringComparer.Ordinal);
+        foreach (var e in await item.To.ListAsync(folder, ct).ConfigureAwait(false)) listing[e.Name] = e;
+        item.DestinationListings[folder] = listing;
+        return listing;
     }
 
     private static async Task<bool> SourceUnchangedAsync(TransferItem item, PlannedFile file, CancellationToken ct)

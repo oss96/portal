@@ -34,7 +34,7 @@ Portal puts the server first. A sidebar holds your saved servers, the server's s
   - Modification times are kept. A replaced file keeps its mode.
   - A failed item doesn't stop the others. Retry and resume continue from the partial file.
   - Pause, cancel, and a configurable number of parallel transfers.
-- **Edit on the server**: opens a server file in its usual Windows app and uploads it again every time it is saved.
+- **Edit on the server**: opens a server file in its usual Windows app and uploads it again every time it is saved. A save goes to a temporary file that replaces the original, except for a symbolic link, which is written in place so the link stays a link.
 - **Command search**: Ctrl+K runs any command, or finds files under the current server folder.
 - **Updates**: Portal checks its own Forgejo releases and installs a new `portal.exe` in place.
 

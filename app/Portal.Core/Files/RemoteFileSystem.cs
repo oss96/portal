@@ -101,30 +101,24 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
     /// <inheritdoc />
     public Task CreateDirectoryAsync(string path, CancellationToken ct) => sftp.CreateDirectoryAsync(path, ct);
 
-    /// <inheritdoc />
+    /// <summary>Renames an entry. Without <paramref name="overwrite"/> an existing target is refused and a link is renamed as a link;
+    /// with it, the caller has checked that <paramref name="to"/> is not a symbolic link, as the transfer engine does.</summary>
     public async Task RenameAsync(string from, string to, bool overwrite, CancellationToken ct)
     {
-        var (f, t) = (PosixShell.Quote(from), PosixShell.Quote(to));
-        if (!overwrite)
+        if (overwrite)
         {
-            if (shell.IsAvailable)
-            {
-                var exists = PosixShell.Quote($"“{RemotePath.NameOf(to)}” already exists.");
-                await shell.RunCheckedAsync($"if [ -e {t} ] || [ -L {t} ]; then echo {exists} >&2; exit 17; fi; mv -- {f} {t}", ct).ConfigureAwait(false);
-                return;
-            }
-            await RefuseLinkAsync(from, ct).ConfigureAwait(false);
-            await sftp.RenameFileAsync(from, to, ct).ConfigureAwait(false);
+            await ReplaceWithSftpAsync(from, to, ct).ConfigureAwait(false);
             return;
         }
         if (shell.IsAvailable)
         {
-            var folder = PosixShell.Quote($"“{RemotePath.NameOf(to)}” is a folder, so it can’t be replaced by a file.");
-            await shell.RunCheckedAsync($"if [ -d {t} ] && [ ! -L {t} ]; then echo {folder} >&2; exit 21; fi; mv -f -- {f} {t}", ct).ConfigureAwait(false);
+            var exists = PosixShell.Quote($"“{RemotePath.NameOf(to)}” already exists.");
+            var t = PosixShell.Quote(to);
+            await shell.RunCheckedAsync($"if [ -e {t} ] || [ -L {t} ]; then echo {exists} >&2; exit 17; fi; mv -- {PosixShell.Quote(from)} {t}", ct).ConfigureAwait(false);
             return;
         }
-        if (await StatAsync(to, ct).ConfigureAwait(false) is not null) await RefuseLinkAsync(to, ct).ConfigureAwait(false);
-        await ReplaceWithSftpAsync(from, to, ct).ConfigureAwait(false);
+        await RefuseLinkAsync(from, ct).ConfigureAwait(false);
+        await sftp.RenameFileAsync(from, to, ct).ConfigureAwait(false);
     }
 
     private async Task RefuseLinkAsync(string path, CancellationToken ct)
@@ -132,7 +126,7 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
         var parent = RemotePath.Parent(path) ?? "/";
         var name = RemotePath.NameOf(path);
         await foreach (var f in sftp.ListDirectoryAsync(parent, ct).ConfigureAwait(false))
-            if (f.Name == name && f.IsSymbolicLink) throw new SymlinkDeleteException(path);
+            if (f.Name == name && f.IsSymbolicLink) throw new SymlinkRefusedException(path);
     }
 
     private async Task ReplaceWithSftpAsync(string from, string to, CancellationToken ct)
@@ -176,7 +170,7 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
 
     private async Task CollectAsync(ISftpFile entry, List<string> files, List<string> folders, CancellationToken ct)
     {
-        if (entry.IsSymbolicLink) throw new SymlinkDeleteException(entry.FullName);
+        if (entry.IsSymbolicLink) throw new SymlinkRefusedException(entry.FullName);
         if (!entry.IsDirectory)
         {
             files.Add(entry.FullName);
@@ -262,7 +256,7 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
     /// <inheritdoc />
     public string? NoCommandsReason => shell.IsAvailable ? null : shell.IsSftpOnly
         ? $"{displayName} allows file transfers only for this account."
-        : $"Portal couldn’t open a command channel to {displayName}. Reconnect to try again.";
+        : $"Portal couldn’t run commands on {displayName} for this connection. Reconnecting may help.";
 
     /// <summary>Total size of a folder and everything inside it, measured on the server.</summary>
     public async Task<long> DirectorySizeAsync(string path, CancellationToken ct)
@@ -314,11 +308,14 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
         }
         if (shell.IsAvailable)
         {
-            await shell.RunCheckedAsync($"mv -f -- {PosixShell.Quote(source)} {PosixShell.Quote(destination)}", ct).ConfigureAwait(false);
+            var d = PosixShell.Quote(destination);
+            var folder = PosixShell.Quote($"“{RemotePath.NameOf(destination)}” is a folder, so it can’t be replaced.");
+            await shell.RunCheckedAsync($"if [ -d {d} ]; then echo {folder} >&2; exit 21; fi; mv -f -- {PosixShell.Quote(source)} {d}", ct).ConfigureAwait(false);
             return;
         }
         await RefuseLinkAsync(source, ct).ConfigureAwait(false);
-        await RenameAsync(source, destination, overwrite: true, ct).ConfigureAwait(false);
+        if (await StatAsync(destination, ct).ConfigureAwait(false) is not null) await RefuseLinkAsync(destination, ct).ConfigureAwait(false);
+        await ReplaceWithSftpAsync(source, destination, ct).ConfigureAwait(false);
     }
 
     private async Task<long> SumSizesAsync(string path, CancellationToken ct)

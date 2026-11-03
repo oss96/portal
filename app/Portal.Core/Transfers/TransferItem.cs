@@ -128,6 +128,7 @@ public sealed class TransferItem
     internal bool PauseRequested { get; set; }
     internal string? CurrentPartPath { get; set; }
     internal string? ResumablePart { get; set; }
+    internal Dictionary<string, Dictionary<string, FileEntry>> DestinationListings { get; } = new(StringComparer.Ordinal);
 
     internal void Sample()
     {

@@ -164,10 +164,10 @@ public sealed class SshIntegrationTests(SshServerFixture server) : IDisposable
             var home = fs.HomeDirectory;
             await server.ExecSftpOnly($"cd {home} && rm -rf links && mkdir -p links/target links/box && echo keep > links/real.txt && echo inside > links/target/f.txt && ln -s real.txt links/filelink && ln -s target links/dirlink && ln -s ../real.txt links/box/inner");
             var links = RemotePath.Combine(home, "links");
-            await Assert.ThrowsAsync<SymlinkDeleteException>(() => fs.DeleteAsync([RemotePath.Combine(links, "filelink")], default));
-            await Assert.ThrowsAsync<SymlinkDeleteException>(() => fs.DeleteAsync([RemotePath.Combine(links, "dirlink")], default));
-            await Assert.ThrowsAsync<SymlinkDeleteException>(() => fs.DeleteAsync([RemotePath.Combine(links, "box")], default));
-            await Assert.ThrowsAsync<SymlinkDeleteException>(() => fs.RenameAsync(RemotePath.Combine(links, "filelink"), RemotePath.Combine(links, "renamed"), overwrite: false, default));
+            await Assert.ThrowsAsync<SymlinkRefusedException>(() => fs.DeleteAsync([RemotePath.Combine(links, "filelink")], default));
+            await Assert.ThrowsAsync<SymlinkRefusedException>(() => fs.DeleteAsync([RemotePath.Combine(links, "dirlink")], default));
+            await Assert.ThrowsAsync<SymlinkRefusedException>(() => fs.DeleteAsync([RemotePath.Combine(links, "box")], default));
+            await Assert.ThrowsAsync<SymlinkRefusedException>(() => fs.RenameAsync(RemotePath.Combine(links, "filelink"), RemotePath.Combine(links, "renamed"), overwrite: false, default));
             Assert.Equal("keep", (await server.ExecSftpOnly($"cat {home}/links/real.txt")).Trim());
             Assert.Equal("inside", (await server.ExecSftpOnly($"cat {home}/links/target/f.txt")).Trim());
             Assert.NotNull(await fs.StatAsync(RemotePath.Combine(links, "box"), default));
@@ -203,9 +203,17 @@ public sealed class SshIntegrationTests(SshServerFixture server) : IDisposable
             var folder = RemotePath.Combine(home, "r/folder");
             var local = Path.Combine(_local, "dest.txt");
             await File.WriteAllTextAsync(local, "uploaded");
-            await RunAsync(new TransferEngine(() => 1), new LocalFileSystem(), [(await new LocalFileSystem().StatAsync(local, default))!], session.TransferFiles, folder, ConflictChoice.Replace);
+            var engine = new TransferEngine(() => 1);
+            var done = new TaskCompletionSource<IReadOnlyList<TransferItem>>();
+            engine.BatchFinished += (_, items) => done.TrySetResult(items);
+            await engine.EnqueueAsync(new LocalFileSystem(), [(await new LocalFileSystem().StatAsync(local, default))!], session.TransferFiles, folder,
+                ConflictPolicy.Replace, _ => throw new InvalidOperationException(), default);
+            var refused = Assert.Single(await done.Task.WaitAsync(TimeSpan.FromSeconds(60)));
+            Assert.Equal(TransferStatus.Failed, refused.Status);
+            Assert.Contains("symbolic link", refused.Error);
             Assert.Equal("shared", (await server.Exec($"cat {home}/r/outside/shared.txt")).Trim());
-            Assert.Equal("uploaded", (await server.Exec($"cat {home}/r/folder/dest.txt")).Trim());
+            Assert.Equal("../outside/shared.txt", (await server.Exec($"readlink {home}/r/folder/dest.txt")).Trim());
+            Assert.Equal("", (await server.Exec($"ls -A {home}/r/folder | grep portal-part || true")).Trim());
 
             await Assert.ThrowsAsync<RemoteCommandException>(() => fs.RenameAsync(RemotePath.Combine(folder, "a.txt"), RemotePath.Combine(folder, "b.txt"), overwrite: false, default));
             Assert.Equal("theirs", (await server.Exec($"cat {home}/r/folder/b.txt")).Trim());

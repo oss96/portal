@@ -35,13 +35,16 @@ public sealed class RemoteShell
     /// <summary>True when the server itself limits the account to SFTP, as opposed to the channel failing.</summary>
     public bool IsSftpOnly { get; }
 
-    /// <summary>Runs a command line that the caller built with <c>PosixShell.Quote</c>.</summary>
-    public async Task<CommandResult> RunAsync(string commandLine, CancellationToken ct)
+    /// <summary>Runs a POSIX sh script that the caller built with <c>PosixShell.Quote</c>. The script reaches <c>sh -s</c> on standard input, so the account's login shell (fish, tcsh, …) only ever parses "sh -s".</summary>
+    public async Task<CommandResult> RunAsync(string script, CancellationToken ct)
     {
         if (_client is null) throw new ShellUnavailableException();
-        using var cmd = _client.CreateCommand(commandLine);
+        using var cmd = _client.CreateCommand("sh -s");
         cmd.CommandTimeout = TimeSpan.FromHours(6);
-        await cmd.ExecuteAsync(ct).ConfigureAwait(false);
+        var execution = cmd.ExecuteAsync(ct);
+        await using (var input = cmd.CreateInputStream())
+            await input.WriteAsync(System.Text.Encoding.UTF8.GetBytes(script + "\n"), ct).ConfigureAwait(false);
+        await execution.ConfigureAwait(false);
         return new CommandResult(cmd.ExitStatus ?? -1, cmd.Result, cmd.Error);
     }
 
@@ -62,10 +65,16 @@ public sealed class RemoteCommandException(CommandResult result)
     public CommandResult Result { get; } = result;
 }
 
-/// <summary>The account may only use SFTP, so a server-side command can't run.</summary>
+/// <summary>The operation needs commands on the server, which this connection can't run.</summary>
 public sealed class ShellUnavailableException()
-    : NotSupportedException("Portal can’t run commands on this server for this connection, so it can’t do this here.");
+    : NotSupportedException("This needs commands on the server, and they aren’t available on this connection.");
 
-/// <summary>A delete, rename or move would touch a symbolic link, which SFTP follows to its target.</summary>
-public sealed class SymlinkDeleteException(string path)
-    : NotSupportedException($"“{path}” is a symbolic link. This account may only use SFTP, which would act on what the link points to, so Portal left everything as it was.");
+/// <summary>A delete, rename, move or replace would touch a symbolic link, which SFTP follows to what it points to.</summary>
+public sealed class SymlinkRefusedException(string path)
+    : NotSupportedException($"“{RemoteName(path)}” is a symbolic link. Over SFTP, Portal would change what it points to instead of the link, so it left everything as it was.")
+{
+    /// <summary>The link's path.</summary>
+    public string Path { get; } = path;
+
+    private static string RemoteName(string path) => path.TrimEnd('/')[(path.TrimEnd('/').LastIndexOf('/') + 1)..];
+}
