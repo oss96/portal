@@ -33,6 +33,8 @@ public partial class App : Application
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        if (Environment.GetEnvironmentVariable("PORTAL_CONFIG_DIR") is { Length: > 0 } config) Core.AppPaths.ConfigDirectory = config;
+        if (Environment.GetEnvironmentVariable("PORTAL_SSH_DIR") is { Length: > 0 } ssh) Core.AppPaths.SshDirectory = ssh;
         Updater.CleanupAfterUpdate();
         var (target, port) = CommandLine.Parse(e.Args);
         var store = SettingsStore.Default;
