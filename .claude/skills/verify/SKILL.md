@@ -27,7 +27,7 @@ About 150 offline tests:
 PORTAL_SSH_TESTS=1 dotnet test Portal.slnx
 ```
 
-Starts `lscr.io/linuxserver/openssh-server` in Docker with a freshly generated key on a random localhost port, and removes it afterwards. Docker must be running.
+Starts two `lscr.io/linuxserver/openssh-server` containers in Docker with a freshly generated key on random localhost ports, one of them limited to SFTP (`ForceCommand internal-sftp`), and removes them afterwards. Docker must be running.
 
 Covers:
 
@@ -35,6 +35,10 @@ Covers:
 - **Sign-in:** password, and a wrong password.
 - **Files:** upload (mtime kept), folder upload and download, replace keeping the mode, rename, copy and move on the server.
 - **Server commands:** `du`, `df`, search (busybox fallback) and delete.
+- **Permissions:** recursive changes touch only the bits that changed.
+- **Copy and move on the server:** conflicts, Keep both names, "x - Copy" in the same folder, replace by policy.
+- **SFTP-only account:** connect, upload and replace, chmod, folder size and delete without a shell.
+- **Host keys again:** a key of a type not on record counts as a changed identity.
 
 ## 3. Screens: when anything on screen changed
 
@@ -59,7 +63,7 @@ It needs the .NET 10 SDK in the guest, and the route added to Forgejo-VM-MCP (`r
 
 ## What none of this covers
 
-- **Behaviour against real servers:** transfer speed against Tower, Unraid's shfs, root-owned paths, and fail2ban on Hetzner are not exercised.
+- **Behaviour against real servers:** transfer speed against Tower, Unraid's shfs, root-owned paths, chown to other users, and fail2ban on Hetzner are not exercised.
 - **Live-window interactions:** drag and drop with Explorer, and the browser screen in a real window.
 - **Updates:** the relaunch after an update.
 
