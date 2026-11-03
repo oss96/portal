@@ -1,0 +1,7 @@
+<Solution>
+  <Folder Name="/app/">
+    <Project Path="app/Portal.Core/Portal.Core.csproj" />
+    <Project Path="app/Portal.Tests/Portal.Tests.csproj" />
+    <Project Path="app/Portal/Portal.csproj" />
+  </Folder>
+</Solution>
