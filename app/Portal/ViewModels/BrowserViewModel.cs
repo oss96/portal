@@ -98,6 +98,15 @@ public sealed partial class BrowserViewModel : ObservableObject, IDisposable
     /// <summary>Name of the server.</summary>
     public string ServerName => Session.Profile.Name;
 
+    /// <summary>Refreshes labels after the saved server was renamed.</summary>
+    public void NotifyProfileChanged()
+    {
+        OnPropertyChanged(nameof(ServerName));
+        OnPropertyChanged(nameof(ConnectionText));
+        OnPropertyChanged(nameof(StorageHeader));
+        BuildServers();
+    }
+
     /// <summary>"Connected to Tower as root" or the lost-connection notice.</summary>
     public string ConnectionText => IsConnectionLost ? $"Connection to {ServerName} lost" : $"Connected to {ServerName} as {Session.User}";
 

@@ -83,6 +83,8 @@ public sealed partial class MainViewModel : ObservableObject, IConnectPrompts
         }
         SaveServers();
         Connect.RefreshCards();
+        OnPropertyChanged(nameof(Title));
+        Browser?.NotifyProfileChanged();
     }
 
     /// <summary>Removes a saved server after asking.</summary>

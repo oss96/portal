@@ -58,12 +58,34 @@ public sealed class TransferEngine(Func<int> maxParallel)
     public async Task<TransferBatch?> EnqueueAsync(IFileSystem from, IReadOnlyList<FileEntry> sources, IFileSystem to, string destinationDirectory,
         ConflictPolicy policy, Func<ConflictQuestion, Task<ConflictAnswer>> ask, CancellationToken ct)
     {
+        await _enqueue.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return await EnqueueOneAtATimeAsync(from, sources, to, destinationDirectory, policy, ask, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _enqueue.Release();
+        }
+    }
+
+    private readonly SemaphoreSlim _enqueue = new(1, 1);
+
+    private static bool SameFolder(IFileSystem fs, string a, string b) => fs.IsRemote
+        ? RemotePath.Normalize(a) == RemotePath.Normalize(b)
+        : string.Equals(Path.GetFullPath(a).TrimEnd('\\'), Path.GetFullPath(b).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
+
+    private async Task<TransferBatch?> EnqueueOneAtATimeAsync(IFileSystem from, IReadOnlyList<FileEntry> sources, IFileSystem to, string destinationDirectory,
+        ConflictPolicy policy, Func<ConflictQuestion, Task<ConflictAnswer>> ask, CancellationToken ct)
+    {
         if (from.IsRemote == to.IsRemote) throw new InvalidOperationException("Transfers go between this PC and a server.");
         var direction = to.IsRemote ? TransferDirection.Upload : TransferDirection.Download;
         var names = to.IsRemote ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
         var existing = new Dictionary<string, FileEntry>(names);
         foreach (var e in await to.ListAsync(destinationDirectory, ct).ConfigureAwait(false)) existing.TryAdd(e.Name, e);
         var taken = new HashSet<string>(existing.Keys, names);
+        var reserved = Unfinished(to).Where(p => to.Parent(p) is { } parent && SameFolder(to, parent, destinationDirectory)).Select(to.NameOf).ToHashSet(names);
+        taken.UnionWith(reserved);
         var conflicts = sources.Count(s => existing.ContainsKey(to.IsRemote ? s.Name : LocalFileSystem.SafeName(s.Name)));
         ConflictChoice? standing = policy switch
         {
@@ -76,7 +98,7 @@ public sealed class TransferEngine(Func<int> maxParallel)
         foreach (var source in sources)
         {
             var incoming = to.IsRemote ? source.Name : LocalFileSystem.SafeName(source.Name);
-            if (Unfinished(to).Contains(to.Combine(destinationDirectory, incoming)))
+            if (reserved.Contains(incoming))
             {
                 var queued = UniqueName(taken, incoming);
                 planned.Add((source, queued, false));

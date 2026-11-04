@@ -268,8 +268,15 @@ public sealed partial class ConnectViewModel : ObservableObject
             FormError = "Choose a key file, or pick another sign-in method.";
             return;
         }
-        FormError = null;
         var existing = _editingId is null ? null : _main.Servers.FirstOrDefault(s => s.Id == _editingId);
+        var keyFile = Auth == AuthKind.KeyFile ? KeyFile : null;
+        if (existing is not null && _main.IsOpen(existing)
+            && (existing.Host != host || existing.User != User.Trim() || existing.Port != port || existing.Auth != Auth || existing.KeyFile != keyFile))
+        {
+            FormError = $"Portal is connected to {existing.Name}. Disconnect first to change its address, user, port or sign-in; the name can change now.";
+            return;
+        }
+        FormError = null;
         var profile = existing ?? new ServerProfile();
         profile.Name = Name.Trim().Length > 0 ? Name.Trim() : host;
         profile.Host = host;

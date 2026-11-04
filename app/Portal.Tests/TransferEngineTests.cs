@@ -242,10 +242,10 @@ public sealed class TransferEngineTests : IDisposable
     {
         var file = LocalFile("same.txt", "one");
         var slow = new TransferEngine(() => 0);
-        await slow.EnqueueAsync(_pc, [await Stat(file)], _server, "/data", ConflictPolicy.Ask, _ => throw new InvalidOperationException(), default);
-        await slow.EnqueueAsync(_pc, [await Stat(file)], _server, "/data", ConflictPolicy.Ask, _ => throw new InvalidOperationException(), default);
+        await Task.WhenAll(Enumerable.Range(0, 3).Select(async _ =>
+            await slow.EnqueueAsync(_pc, [await Stat(file)], _server, "/data", ConflictPolicy.Ask, _ => throw new InvalidOperationException(), default)));
 
-        Assert.Equal(["same (1).txt", "same.txt"], slow.Snapshot().Select(i => i.DestinationName).Order(StringComparer.Ordinal));
+        Assert.Equal(["same (1).txt", "same (2).txt", "same.txt"], slow.Snapshot().Select(i => i.DestinationName).Order(StringComparer.Ordinal));
     }
 
     [Theory]
