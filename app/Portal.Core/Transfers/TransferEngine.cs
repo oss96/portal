@@ -425,18 +425,19 @@ public sealed class TransferEngine(Func<int> maxParallel)
         }
         item.CurrentPartPath = part;
 
-        var offset = 0L;
+        var resume = false;
         var leftover = await to.StatAsync(part, ct).ConfigureAwait(false);
         if (part == item.ResumablePart && leftover is { IsDirectory: false } && leftover.Size <= file.Entry.Size
             && await SourceUnchangedAsync(item, file, ct).ConfigureAwait(false)
             && (to is not IServerFileSystem s || !(await s.SymbolicLinksInAsync(folder, ct).ConfigureAwait(false)).Contains(to.NameOf(part))))
-            offset = leftover.Size;
+            resume = true;
         else if (leftover is not null)
         {
             if (to.IsRemote) await to.DeleteAsync([part], ct).ConfigureAwait(false);
             else LocalFileSystem.DeletePermanently(part);
         }
         item.ResumablePart = null;
+        var offset = resume ? leftover!.Size : 0L;
         var before = item.BytesDone;
         var progress = new SyncProgress(n => { item.BytesDone = before + offset + n; item.Sample(); });
         progress.Report(0);
@@ -444,11 +445,11 @@ public sealed class TransferEngine(Func<int> maxParallel)
         if (to.IsRemote)
         {
             await using var source = LocalFileSystem.OpenRead(file.SourcePath, offset);
-            await to.WriteFromAsync(part, source, offset > 0 ? WriteMode.Append : WriteMode.CreateNew, progress, ct).ConfigureAwait(false);
+            await to.WriteFromAsync(part, source, resume ? WriteMode.Append : WriteMode.CreateNew, progress, ct).ConfigureAwait(false);
         }
         else
         {
-            await using var target = LocalFileSystem.OpenWrite(part, offset > 0);
+            await using var target = LocalFileSystem.OpenWrite(part, resume);
             await item.From.ReadToAsync(file.SourcePath, target, offset, progress, ct).ConfigureAwait(false);
         }
 

@@ -17,7 +17,10 @@ internal sealed class MemoryFileSystem : IFileSystem
     /// <summary>Fails the next write once this many bytes went through, then behaves.</summary>
     public long? FailWriteAfter { get; set; }
 
-    /// <summary>Number of times a write started at a non-zero offset.</summary>
+    /// <summary>Fails the next publish once, then behaves.</summary>
+    public bool FailNextPublish { get; set; }
+
+    /// <summary>Number of resumed writes.</summary>
     public int AppendedWrites { get; private set; }
 
     public void AddDirectory(string path) => _nodes[RemotePath.Normalize(path)] = new Node(true, [], DateTime.UtcNow, 0x1ED);
@@ -63,7 +66,12 @@ internal sealed class MemoryFileSystem : IFileSystem
         return Task.CompletedTask;
     }
 
-    public Task PublishAsync(string part, string destination, bool overwrite, CancellationToken ct) => RenameAsync(part, destination, overwrite, ct);
+    public Task PublishAsync(string part, string destination, bool overwrite, CancellationToken ct)
+    {
+        if (!FailNextPublish) return RenameAsync(part, destination, overwrite, ct);
+        FailNextPublish = false;
+        throw new IOException("Simulated publish failure.");
+    }
 
     public Task DeleteAsync(IReadOnlyList<string> paths, CancellationToken ct)
     {

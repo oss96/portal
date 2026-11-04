@@ -142,6 +142,29 @@ public sealed class TransferEngineTests : IDisposable
         Assert.Equal(1, _server.AppendedWrites);
     }
 
+    [Theory]
+    [InlineData("some contents")]
+    [InlineData("")]
+    public async Task Retry_succeeds_after_a_drop_before_the_first_byte(string contents)
+    {
+        var file = LocalFile("early.txt", contents);
+        if (contents.Length > 0) _server.FailWriteAfter = 0;
+        else _server.FailNextPublish = true;
+
+        var items = await RunAsync(_pc, [await Stat(file)], _server, "/data");
+        var failed = items.Single();
+        Assert.Equal(TransferStatus.Failed, failed.Status);
+
+        var done = new TaskCompletionSource();
+        _engine.BatchFinished += (_, _) => done.TrySetResult();
+        _engine.Resume(failed);
+        await done.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(TransferStatus.Done, failed.Status);
+        Assert.Equal(contents, _server.Read("/data/early.txt"));
+        Assert.DoesNotContain(_server.Paths, p => p.EndsWith(".portal-part", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task A_new_transfer_ignores_a_leftover_partial_file()
     {
