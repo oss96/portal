@@ -610,6 +610,7 @@ public sealed partial class BrowserViewModel : ObservableObject, IDisposable
             var skipped = result.Skipped > 0 ? $" · {Formatting.Count(result.Skipped, "item")} skipped" : "";
             Main.Toasts.Show(ToastKind.Success, $"{(move ? "Moved" : "Copied")} {Formatting.Count(result.Placed.Count, "item")} on {ServerName}", folder + skipped);
         });
+        if (!completed) await Remote.RefreshAsync();
         return completed;
     }
 

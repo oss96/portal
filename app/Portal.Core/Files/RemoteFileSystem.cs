@@ -305,18 +305,20 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
     {
         var (s, d) = (PosixShell.Quote(source), PosixShell.Quote(destination));
         return shell.RunCheckedAsync(merge
-            ? $"{MergeGuard(source, destination)} cp -a -- {PosixShell.Quote(source + "/.")} {PosixShell.Quote(destination + "/")}"
+            ? $"{MergeGuard(source, destination, move: false)} cp -a -- {PosixShell.Quote(source + "/.")} {PosixShell.Quote(destination + "/")}"
             : $"{LinkGuard(destination)} cp -a -- {s} {d}", ct);
     }
 
     private static string LinkGuard(string destination) =>
         $"if [ -L {PosixShell.Quote(destination)} ]; then echo {PosixShell.Quote(new SymlinkRefusedException(destination).Message)} >&2; exit 22; fi;";
 
-    private static string MergeGuard(string source, string destination)
+    private static string MergeGuard(string source, string destination, bool move)
     {
         var (s, d) = (PosixShell.Quote(source), PosixShell.Quote(destination));
-        var stopped = PosixShell.Quote($"Something inside “{RemotePath.NameOf(destination)}” is a symbolic link where the copy would write, so Portal stopped before changing anything:");
-        return $"{LinkGuard(destination)} ( cd {s} && find . -mindepth 1 -print ) | while IFS= read -r p; do if [ -L {d}/\"$p\" ]; then echo {stopped} \"${{p#./}}\" >&2; exit 23; fi; done || exit 23;";
+        var verb = move ? "moved" : "copied";
+        var message = PosixShell.Quote($"“{RemotePath.NameOf(source)}” wasn’t {verb}: inside “{RemotePath.NameOf(destination)}” there is a symbolic link where it would write:");
+        var check = PosixShell.Quote("d=$1; m=$2; shift 2; for p; do if [ -L \"$d/$p\" ]; then printf '%s %s\\n' \"$m\" \"${p#./}\" >&2; exit 23; fi; done");
+        return $"{LinkGuard(destination)} cd {s} || exit 1; find . -mindepth 1 -exec sh -c {check} sh {d} {message} {{}} + || exit 23;";
     }
 
     /// <summary>Moves one entry to <paramref name="destination"/>; <paramref name="merge"/> moves a folder's contents into an existing folder.</summary>
@@ -324,7 +326,7 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
     {
         if (merge)
         {
-            await shell.RunCheckedAsync($"{MergeGuard(source, destination)} cp -a -- {PosixShell.Quote(source + "/.")} {PosixShell.Quote(destination + "/")} && rm -rf -- {PosixShell.Quote(source)}", ct).ConfigureAwait(false);
+            await shell.RunCheckedAsync($"{MergeGuard(source, destination, move: true)} cp -a -- {PosixShell.Quote(source + "/.")} {PosixShell.Quote(destination + "/")} && rm -rf -- {PosixShell.Quote(source)}", ct).ConfigureAwait(false);
             return;
         }
         if (shell.IsAvailable)

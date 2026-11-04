@@ -258,6 +258,11 @@ public sealed class SshIntegrationTests(SshServerFixture server) : IDisposable
         Assert.Equal("o", Read("out/o.txt"));
         Assert.Equal("new", Read("src/f.txt"));
         Assert.Equal("x", Read("single.txt"));
+        Assert.Equal("", (await server.Exec($"ls -A {h}/m/dest/sub")).Trim());
+        await server.Exec($"cd {h}/m && mkdir -p nl/src nl/dest && n=$(printf 'a\\nb') && printf NEW > \"nl/src/$n\" && ln -s ../../out/o.txt \"nl/dest/$n\"");
+        var nl = await Assert.ThrowsAsync<RemoteCommandException>(() => fs.CopyOnServerAsync(m + "/nl/src", m + "/nl/dest", merge: true, default));
+        Assert.Contains("wasn’t copied", nl.Message);
+        Assert.Equal("o", Read("out/o.txt"));
 
         await server.Exec($"cd {h}/m && mkdir -p up/top/deep && ln -s ../../out up/top/sub && ln -s ../../out/o.txt up/top/link.txt && ln -s ../../../out/o.txt up/top/deep/.p.txt.portal-part");
         var tree = Directory.CreateDirectory(Path.Combine(_local, "top")).FullName;
@@ -274,7 +279,7 @@ public sealed class SshIntegrationTests(SshServerFixture server) : IDisposable
             ConflictPolicy.Replace, _ => throw new InvalidOperationException(), default);
         var item = Assert.Single(await done.Task.WaitAsync(TimeSpan.FromSeconds(60)));
         Assert.Equal(TransferStatus.Done, item.Status);
-        Assert.Equal(["link.txt", "p.txt", "sub"], item.SkippedLinks.Order().ToArray());
+        Assert.Equal(["deep/.p.txt.portal-part", "link.txt", "sub"], item.SkippedLinks.Order(StringComparer.Ordinal).ToArray());
         Assert.Equal("uploaded", Read("up/top/plain.txt"));
         Assert.Equal("o", Read("out/o.txt"));
         Assert.Equal("", (await server.Exec($"ls {h}/m/out | grep -v '^o.txt$' || true")).Trim());

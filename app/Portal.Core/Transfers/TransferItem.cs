@@ -140,6 +140,14 @@ public sealed class TransferItem
     internal string? ResumablePart { get; set; }
     internal List<string> Skipped { get; } = [];
 
+    internal void AddSkipped(string destinationPath)
+    {
+        var root = DestinationPath;
+        var relative = destinationPath.StartsWith(root + "/", StringComparison.Ordinal) ? destinationPath[(root.Length + 1)..] : To.NameOf(destinationPath);
+        lock (Skipped)
+            if (!Skipped.Contains(relative)) Skipped.Add(relative);
+    }
+
     internal void Sample()
     {
         var now = DateTime.UtcNow;

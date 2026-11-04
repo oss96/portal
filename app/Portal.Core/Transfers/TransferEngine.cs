@@ -145,7 +145,6 @@ public sealed class TransferEngine(Func<int> maxParallel)
             if (item.Status is not (TransferStatus.Paused or TransferStatus.Failed)) return;
             item.Resuming = item.BytesDone > 0;
             item.Batch.ClearLinkCache();
-            item.Skipped.Clear();
             item.Error = null;
             item.Status = TransferStatus.Queued;
         }
@@ -298,7 +297,7 @@ public sealed class TransferEngine(Func<int> maxParallel)
             {
                 if (dir == item.DestinationPath) throw new SymlinkRefusedException(dir);
                 skippedFolders.Add(dir);
-                item.Skipped.Add(item.To.NameOf(dir));
+                item.AddSkipped(dir);
                 continue;
             }
             if (await item.To.StatAsync(dir, ct).ConfigureAwait(false) is null) await item.To.CreateDirectoryAsync(dir, ct).ConfigureAwait(false);
@@ -317,9 +316,9 @@ public sealed class TransferEngine(Func<int> maxParallel)
             {
                 await CopyFileAsync(item, file, ct).ConfigureAwait(false);
             }
-            catch (SymlinkRefusedException) when (item.Source.IsDirectory)
+            catch (SymlinkRefusedException e) when (item.Source.IsDirectory)
             {
-                item.Skipped.Add(file.Entry.Name);
+                item.AddSkipped(e.Path);
             }
             item.Completed.Add(file.DestinationPath);
             item.FilesDone = item.Completed.Count;
