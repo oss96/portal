@@ -64,7 +64,7 @@ public sealed class TransferEngine(Func<int> maxParallel)
         var existing = new Dictionary<string, FileEntry>(names);
         foreach (var e in await to.ListAsync(destinationDirectory, ct).ConfigureAwait(false)) existing.TryAdd(e.Name, e);
         var taken = new HashSet<string>(existing.Keys, names);
-        var conflicts = sources.Count(s => existing.ContainsKey(s.Name));
+        var conflicts = sources.Count(s => existing.ContainsKey(to.IsRemote ? s.Name : LocalFileSystem.SafeName(s.Name)));
         ConflictChoice? standing = policy switch
         {
             ConflictPolicy.Replace => ConflictChoice.Replace,
@@ -75,22 +75,30 @@ public sealed class TransferEngine(Func<int> maxParallel)
         var planned = new List<(FileEntry Source, string Name, bool Replace)>();
         foreach (var source in sources)
         {
-            if (!existing.TryGetValue(source.Name, out var current))
+            var incoming = to.IsRemote ? source.Name : LocalFileSystem.SafeName(source.Name);
+            if (Unfinished(to).Contains(to.Combine(destinationDirectory, incoming)))
             {
-                var name = taken.Contains(source.Name) ? UniqueName(taken, source.Name) : source.Name;
+                var queued = UniqueName(taken, incoming);
+                planned.Add((source, queued, false));
+                taken.Add(queued);
+                continue;
+            }
+            if (!existing.TryGetValue(incoming, out var current))
+            {
+                var name = taken.Contains(incoming) ? UniqueName(taken, incoming) : incoming;
                 planned.Add((source, name, false));
                 taken.Add(name);
                 continue;
             }
             conflicts--;
-            if (planned.Any(x => names.Equals(x.Name, source.Name)))
+            if (planned.Any(x => names.Equals(x.Name, incoming)))
             {
-                var separate = UniqueName(taken, source.Name);
+                var separate = UniqueName(taken, incoming);
                 planned.Add((source, separate, false));
                 taken.Add(separate);
                 continue;
             }
-            var keepBothName = UniqueName(taken, source.Name);
+            var keepBothName = UniqueName(taken, incoming);
             var question = new ConflictQuestion(source, current, direction, to.DisplayName, keepBothName, conflicts);
             var choice = standing;
             if (choice is null || (choice == ConflictChoice.Replace && !question.CanReplace))
@@ -111,7 +119,7 @@ public sealed class TransferEngine(Func<int> maxParallel)
                     taken.Add(keepBothName);
                     break;
                 default:
-                    planned.Add((source, source.Name, true));
+                    planned.Add((source, incoming, true));
                     break;
             }
         }
@@ -192,6 +200,13 @@ public sealed class TransferEngine(Func<int> maxParallel)
     {
         lock (_gate) _items.RemoveAll(i => i.Status is TransferStatus.Done or TransferStatus.Cancelled);
         Changed?.Invoke();
+    }
+
+    private HashSet<string> Unfinished(IFileSystem to)
+    {
+        lock (_gate)
+            return _items.Where(i => i.To == to && i.Status is TransferStatus.Queued or TransferStatus.Running or TransferStatus.Paused or TransferStatus.Failed)
+                .Select(i => i.DestinationPath).ToHashSet(to.IsRemote ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase);
     }
 
     /// <summary>A free name such as "photo (1).jpg" that is not in <paramref name="taken"/>.</summary>
@@ -348,7 +363,8 @@ public sealed class TransferEngine(Func<int> maxParallel)
             var names = new HashSet<string>(item.To.IsRemote ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase);
             foreach (var e in await item.From.ListAsync(src, ct).ConfigureAwait(false))
             {
-                var name = names.Contains(e.Name) ? UniqueName(names, e.Name) : e.Name;
+                var safe = item.To.IsRemote ? e.Name : LocalFileSystem.SafeName(e.Name);
+                var name = names.Contains(safe) ? UniqueName(names, safe) : safe;
                 names.Add(name);
                 var target = item.To.Combine(dst, name);
                 switch (e.Kind)
@@ -372,7 +388,13 @@ public sealed class TransferEngine(Func<int> maxParallel)
         var to = item.To;
         var name = to.NameOf(file.DestinationPath);
         var folder = to.Parent(file.DestinationPath) ?? to.RootPath;
-        var part = to.Combine(folder, to.IsRemote ? $".{name}.portal-part" : $"{name}.portal-part");
+        var token = item.Id.ToString("N")[..8];
+        var part = to.Combine(folder, to.IsRemote ? $".{name}.{token}.portal-part" : $"{name}.{token}.portal-part");
+        if (!to.IsRemote)
+        {
+            LocalFileSystem.EnsureInside(item.Batch.DestinationDirectory, file.DestinationPath);
+            LocalFileSystem.EnsureInside(item.Batch.DestinationDirectory, part);
+        }
         if (to is IServerFileSystem server)
         {
             var links = await item.Batch.LinksInAsync(server, folder, ct).ConfigureAwait(false);

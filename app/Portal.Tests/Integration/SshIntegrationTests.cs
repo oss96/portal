@@ -279,7 +279,8 @@ public sealed class SshIntegrationTests(SshServerFixture server) : IDisposable
             ConflictPolicy.Replace, _ => throw new InvalidOperationException(), default);
         var item = Assert.Single(await done.Task.WaitAsync(TimeSpan.FromSeconds(60)));
         Assert.Equal(TransferStatus.Done, item.Status);
-        Assert.Equal(["deep/.p.txt.portal-part", "link.txt", "sub"], item.SkippedLinks.Order(StringComparer.Ordinal).ToArray());
+        Assert.Equal(["link.txt", "sub"], item.SkippedLinks.Order(StringComparer.Ordinal).ToArray());
+        Assert.Equal("uploaded", Read("up/top/deep/p.txt"));
         Assert.Equal("uploaded", Read("up/top/plain.txt"));
         Assert.Equal("o", Read("out/o.txt"));
         Assert.Equal("", (await server.Exec($"ls {h}/m/out | grep -v '^o.txt$' || true")).Trim());

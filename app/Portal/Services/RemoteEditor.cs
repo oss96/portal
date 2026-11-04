@@ -18,7 +18,8 @@ public sealed class RemoteEditor(IServerSession session, ToastService toasts) : 
     {
         var folder = Path.Combine(Path.GetTempPath(), "Portal", "edit", session.Profile.Id, Hash(file.FullPath));
         Directory.CreateDirectory(folder);
-        var local = Path.Combine(folder, file.Name);
+        var local = Path.Combine(folder, LocalFileSystem.SafeName(file.Name));
+        LocalFileSystem.EnsureInside(folder, local);
         await using (var target = LocalFileSystem.OpenWrite(local, append: false))
             await session.TransferFiles.ReadToAsync(file.FullPath, target, 0, new Progress<long>(), CancellationToken.None);
         File.SetLastWriteTimeUtc(local, DateTime.UtcNow);
@@ -75,9 +76,14 @@ public sealed class RemoteEditor(IServerSession session, ToastService toasts) : 
         try
         {
             var fs = session.TransferFiles;
-            var part = RemotePath.Combine(RemotePath.Parent(remote) ?? "/", $".{RemotePath.NameOf(remote)}.portal-part");
+            var folder = RemotePath.Parent(remote) ?? "/";
+            var name = RemotePath.NameOf(remote);
+            var links = await fs.SymbolicLinksInAsync(folder, CancellationToken.None);
+            var part = RemotePath.Combine(folder, $".{name}.{Guid.NewGuid().ToString("N")[..12]}.portal-part");
+            if (links.Contains(RemotePath.NameOf(part)) || await fs.StatAsync(part, CancellationToken.None) is not null)
+                throw new IOException($"A file named {RemotePath.NameOf(part)} is in the way, so Portal didn’t save. Try again.");
             await using var source = new FileStream(local, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            if (isLink)
+            if (links.Contains(name) || isLink)
             {
                 await fs.WriteFromAsync(remote, source, append: false, new Progress<long>(), CancellationToken.None);
             }

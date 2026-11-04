@@ -130,7 +130,7 @@ public sealed class TransferEngineTests : IDisposable
         var failed = items.Single(i => i.Source.Name == "big.bin");
         Assert.Equal(TransferStatus.Failed, failed.Status);
         Assert.Equal(TransferStatus.Done, items.Single(i => i.Source.Name == "small.txt").Status);
-        Assert.True(_server.Exists("/data/.big.bin.portal-part"));
+        Assert.Contains(_server.Paths, p => p.StartsWith("/data/.big.bin.", StringComparison.Ordinal) && p.EndsWith(".portal-part", StringComparison.Ordinal));
 
         var done = new TaskCompletionSource();
         _engine.BatchFinished += (_, _) => done.TrySetResult();
@@ -214,6 +214,48 @@ public sealed class TransferEngineTests : IDisposable
 
         Assert.Equal(["lower", "upper"], Directory.GetFiles(_local).Select(File.ReadAllText).Order().ToList());
     }
+
+    [Fact]
+    public async Task A_server_name_with_windows_path_characters_stays_inside_the_download_folder()
+    {
+        var outside = Path.Combine(Path.GetDirectoryName(_local)!, Path.GetFileName(_local) + "-victim.txt");
+        File.WriteAllText(outside, "victim");
+        try
+        {
+            _server.AddFile($"/data/..\\{Path.GetFileName(outside)}", "evil");
+            _server.AddFile("/data/C:\\Windows\\x.txt", "evil");
+
+            await RunAsync(_server, [.. await _server.ListAsync("/data", default)], _pc, _local);
+
+            Assert.Equal("victim", File.ReadAllText(outside));
+            Assert.All(Directory.GetFiles(_local), f => Assert.Equal("evil", File.ReadAllText(f)));
+            Assert.Equal(2, Directory.GetFiles(_local).Length);
+        }
+        finally
+        {
+            File.Delete(outside);
+        }
+    }
+
+    [Fact]
+    public async Task Two_queued_transfers_never_target_the_same_file()
+    {
+        var file = LocalFile("same.txt", "one");
+        var slow = new TransferEngine(() => 0);
+        await slow.EnqueueAsync(_pc, [await Stat(file)], _server, "/data", ConflictPolicy.Ask, _ => throw new InvalidOperationException(), default);
+        await slow.EnqueueAsync(_pc, [await Stat(file)], _server, "/data", ConflictPolicy.Ask, _ => throw new InvalidOperationException(), default);
+
+        Assert.Equal(["same (1).txt", "same.txt"], slow.Snapshot().Select(i => i.DestinationName).Order(StringComparer.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("..\\evil.txt", ".._evil.txt")]
+    [InlineData("a:b*c?.txt", "a_b_c_.txt")]
+    [InlineData("CON.txt", "_CON.txt")]
+    [InlineData("trailing. ", "trailing")]
+    [InlineData("..", "_")]
+    [InlineData("normal name.mkv", "normal name.mkv")]
+    public void Server_names_map_to_safe_windows_names(string server, string windows) => Assert.Equal(windows, LocalFileSystem.SafeName(server));
 
     [Fact]
     public void Unique_name_counts_up_past_taken_names()

@@ -112,6 +112,31 @@ public sealed class LocalFileSystem : IFileSystem
         }
     }, ct);
 
+    private static readonly HashSet<string> ReservedNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    };
+
+    /// <summary>A Windows-safe version of a server name: characters Windows forbids (\ / : * ? " &lt; &gt; | and control characters) become "_",
+    /// trailing dots and spaces are dropped, and device names and "." or ".." get a leading "_".</summary>
+    public static string SafeName(string name)
+    {
+        var chars = name.Select(c => c < 32 || "\\/:*?\"<>|".Contains(c) ? '_' : c).ToArray();
+        var safe = new string(chars).TrimEnd('.', ' ');
+        if (safe.Length == 0) return "_";
+        var stem = safe.Split('.')[0];
+        return ReservedNames.Contains(stem) ? "_" + safe : safe;
+    }
+
+    /// <summary>Throws unless <paramref name="path"/> resolves to a place inside <paramref name="folder"/>.</summary>
+    public static void EnsureInside(string folder, string path)
+    {
+        var root = Path.GetFullPath(folder).TrimEnd('\\') + "\\";
+        if (!Path.GetFullPath(path).StartsWith(root, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"“{Path.GetFileName(path)}” would land outside {folder}, so Portal didn’t write it.");
+    }
+
     /// <summary>Deletes a file outright, skipping the Recycle Bin. Used for transfer leftovers.</summary>
     public static void DeletePermanently(string path)
     {
