@@ -378,7 +378,10 @@ public sealed partial class BrowserViewModel : ObservableObject, IDisposable
             var bytes = await Session.Files.DirectorySizeAsync(entry.Path, cts.Token);
             details.Size = $"{Formatting.Size(bytes)} ({bytes:N0} bytes)";
         }
-        catch (Exception e) when (!cts.IsCancellationRequested)
+        catch (Exception) when (cts.IsCancellationRequested)
+        {
+        }
+        catch (Exception e)
         {
             details.Size = FriendlyError.ForOperation(e);
         }
