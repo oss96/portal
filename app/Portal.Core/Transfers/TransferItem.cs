@@ -50,6 +50,13 @@ public sealed class TransferBatch
 
     /// <summary>Number of items in the batch.</summary>
     public int Count { get; }
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Task<IReadOnlySet<string>>> _links = new(StringComparer.Ordinal);
+
+    internal Task<IReadOnlySet<string>> LinksInAsync(IServerFileSystem server, string folder, CancellationToken ct) =>
+        _links.GetOrAdd(folder, f => server.SymbolicLinksInAsync(f, CancellationToken.None)).WaitAsync(ct);
+
+    internal void ClearLinkCache() => _links.Clear();
 }
 
 /// <summary>One file or folder being transferred.</summary>
@@ -111,6 +118,9 @@ public sealed class TransferItem
     /// <summary>Why the item failed.</summary>
     public string? Error { get; internal set; }
 
+    /// <summary>Names left out because they are symbolic links on the server.</summary>
+    public IReadOnlyList<string> SkippedLinks => Skipped;
+
     /// <summary>Recent speed in bytes per second.</summary>
     public double BytesPerSecond { get; private set; }
 
@@ -128,7 +138,7 @@ public sealed class TransferItem
     internal bool PauseRequested { get; set; }
     internal string? CurrentPartPath { get; set; }
     internal string? ResumablePart { get; set; }
-    internal Dictionary<string, Dictionary<string, FileEntry>> DestinationListings { get; } = new(StringComparer.Ordinal);
+    internal List<string> Skipped { get; } = [];
 
     internal void Sample()
     {

@@ -71,7 +71,7 @@ public sealed class ShellUnavailableException()
 
 /// <summary>A delete, rename, move or replace would touch a symbolic link, which SFTP follows to what it points to.</summary>
 public sealed class SymlinkRefusedException(string path)
-    : NotSupportedException($"“{RemoteName(path)}” is a symbolic link. Over SFTP, Portal would change what it points to instead of the link, so it left everything as it was.")
+    : NotSupportedException($"“{RemoteName(path)}” is a symbolic link. Portal would change what it points to instead of the link, so it left the link and its target alone.")
 {
     /// <summary>The link's path.</summary>
     public string Path { get; } = path;

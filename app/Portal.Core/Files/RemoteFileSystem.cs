@@ -121,6 +121,15 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
         await sftp.RenameFileAsync(from, to, ct).ConfigureAwait(false);
     }
 
+    /// <inheritdoc />
+    public async Task<IReadOnlySet<string>> SymbolicLinksInAsync(string folder, CancellationToken ct)
+    {
+        var links = new HashSet<string>(StringComparer.Ordinal);
+        await foreach (var f in sftp.ListDirectoryAsync(folder, ct).ConfigureAwait(false))
+            if (f.IsSymbolicLink) links.Add(f.Name);
+        return links;
+    }
+
     private async Task RefuseLinkAsync(string path, CancellationToken ct)
     {
         var parent = RemotePath.Parent(path) ?? "/";
@@ -295,7 +304,19 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
     public Task CopyOnServerAsync(string source, string destination, bool merge, CancellationToken ct)
     {
         var (s, d) = (PosixShell.Quote(source), PosixShell.Quote(destination));
-        return shell.RunCheckedAsync(merge ? $"cp -a -- {PosixShell.Quote(source + "/.")} {PosixShell.Quote(destination + "/")}" : $"cp -a -- {s} {d}", ct);
+        return shell.RunCheckedAsync(merge
+            ? $"{MergeGuard(source, destination)} cp -a -- {PosixShell.Quote(source + "/.")} {PosixShell.Quote(destination + "/")}"
+            : $"{LinkGuard(destination)} cp -a -- {s} {d}", ct);
+    }
+
+    private static string LinkGuard(string destination) =>
+        $"if [ -L {PosixShell.Quote(destination)} ]; then echo {PosixShell.Quote(new SymlinkRefusedException(destination).Message)} >&2; exit 22; fi;";
+
+    private static string MergeGuard(string source, string destination)
+    {
+        var (s, d) = (PosixShell.Quote(source), PosixShell.Quote(destination));
+        var stopped = PosixShell.Quote($"Something inside “{RemotePath.NameOf(destination)}” is a symbolic link where the copy would write, so Portal stopped before changing anything:");
+        return $"{LinkGuard(destination)} ( cd {s} && find . -mindepth 1 -print ) | while IFS= read -r p; do if [ -L {d}/\"$p\" ]; then echo {stopped} \"${{p#./}}\" >&2; exit 23; fi; done || exit 23;";
     }
 
     /// <summary>Moves one entry to <paramref name="destination"/>; <paramref name="merge"/> moves a folder's contents into an existing folder.</summary>
@@ -303,7 +324,7 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
     {
         if (merge)
         {
-            await shell.RunCheckedAsync($"cp -a -- {PosixShell.Quote(source + "/.")} {PosixShell.Quote(destination + "/")} && rm -rf -- {PosixShell.Quote(source)}", ct).ConfigureAwait(false);
+            await shell.RunCheckedAsync($"{MergeGuard(source, destination)} cp -a -- {PosixShell.Quote(source + "/.")} {PosixShell.Quote(destination + "/")} && rm -rf -- {PosixShell.Quote(source)}", ct).ConfigureAwait(false);
             return;
         }
         if (shell.IsAvailable)

@@ -241,6 +241,47 @@ public sealed class SshIntegrationTests(SshServerFixture server) : IDisposable
     }
 
     [SshFact]
+    public async Task Copies_moves_and_merges_never_write_through_links_in_the_destination()
+    {
+        await using var session = await SshConnector.ConnectAsync(Profile(), new Prompts(), new Progress<ConnectStage>(), default);
+        var fs = session.Files;
+        var h = fs.HomeDirectory;
+        await server.Exec($"cd {h} && rm -rf m && mkdir -p m/out m/src/sub m/dest/sub m/up && echo o > m/out/o.txt && echo new > m/src/f.txt && echo s > m/src/sub/g.txt"
+            + " && ln -s ../../out/o.txt m/dest/f.txt && ln -s ../out/o.txt m/dest/single.txt && echo x > m/single.txt && mkdir m/dest/folder");
+        var m = RemotePath.Combine(h, "m");
+        string Read(string rel) => server.Exec($"cat {h}/m/{rel}").GetAwaiter().GetResult().Trim();
+
+        await Assert.ThrowsAsync<RemoteCommandException>(() => fs.CopyOnServerAsync(m + "/single.txt", m + "/dest/single.txt", merge: false, default));
+        await Assert.ThrowsAsync<RemoteCommandException>(() => fs.CopyOnServerAsync(m + "/src", m + "/dest", merge: true, default));
+        await Assert.ThrowsAsync<RemoteCommandException>(() => fs.MoveOnServerAsync(m + "/src", m + "/dest", merge: true, default));
+        await Assert.ThrowsAsync<RemoteCommandException>(() => fs.MoveOnServerAsync(m + "/single.txt", m + "/dest/folder", merge: false, default));
+        Assert.Equal("o", Read("out/o.txt"));
+        Assert.Equal("new", Read("src/f.txt"));
+        Assert.Equal("x", Read("single.txt"));
+
+        await server.Exec($"cd {h}/m && mkdir -p up/top/deep && ln -s ../../out up/top/sub && ln -s ../../out/o.txt up/top/link.txt && ln -s ../../../out/o.txt up/top/deep/.p.txt.portal-part");
+        var tree = Directory.CreateDirectory(Path.Combine(_local, "top")).FullName;
+        Directory.CreateDirectory(Path.Combine(tree, "sub"));
+        Directory.CreateDirectory(Path.Combine(tree, "deep"));
+        await File.WriteAllTextAsync(Path.Combine(tree, "sub", "g.txt"), "uploaded");
+        await File.WriteAllTextAsync(Path.Combine(tree, "link.txt"), "uploaded");
+        await File.WriteAllTextAsync(Path.Combine(tree, "deep", "p.txt"), "uploaded");
+        await File.WriteAllTextAsync(Path.Combine(tree, "plain.txt"), "uploaded");
+        var engine = new TransferEngine(() => 2);
+        var done = new TaskCompletionSource<IReadOnlyList<TransferItem>>();
+        engine.BatchFinished += (_, items) => done.TrySetResult(items);
+        await engine.EnqueueAsync(new LocalFileSystem(), [(await new LocalFileSystem().StatAsync(tree, default))!], session.TransferFiles, m + "/up",
+            ConflictPolicy.Replace, _ => throw new InvalidOperationException(), default);
+        var item = Assert.Single(await done.Task.WaitAsync(TimeSpan.FromSeconds(60)));
+        Assert.Equal(TransferStatus.Done, item.Status);
+        Assert.Equal(["link.txt", "p.txt", "sub"], item.SkippedLinks.Order().ToArray());
+        Assert.Equal("uploaded", Read("up/top/plain.txt"));
+        Assert.Equal("o", Read("out/o.txt"));
+        Assert.Equal("", (await server.Exec($"ls {h}/m/out | grep -v '^o.txt$' || true")).Trim());
+        await fs.DeleteAsync([m], default);
+    }
+
+    [SshFact]
     public async Task A_known_server_that_hangs_up_is_not_reported_as_a_changed_identity()
     {
         using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);

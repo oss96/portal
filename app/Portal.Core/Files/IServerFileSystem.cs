@@ -23,6 +23,9 @@ public interface IServerFileSystem : IFileSystem
     /// <summary>Turns permission bits on and off and/or changes the owner, optionally for everything inside folders too.</summary>
     Task SetPermissionsAsync(IReadOnlyList<string> paths, PermissionDelta? mode, string? owner, string? group, bool recursive, CancellationToken ct);
 
+    /// <summary>Names in <paramref name="folder"/> that are symbolic links, read from one listing without following them.</summary>
+    Task<IReadOnlySet<string>> SymbolicLinksInAsync(string folder, CancellationToken ct);
+
     /// <summary>Total size of a folder and everything inside it.</summary>
     Task<long> DirectorySizeAsync(string path, CancellationToken ct);
 

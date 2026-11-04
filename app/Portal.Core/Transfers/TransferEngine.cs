@@ -144,7 +144,8 @@ public sealed class TransferEngine(Func<int> maxParallel)
         {
             if (item.Status is not (TransferStatus.Paused or TransferStatus.Failed)) return;
             item.Resuming = item.BytesDone > 0;
-            item.DestinationListings.Clear();
+            item.Batch.ClearLinkCache();
+            item.Skipped.Clear();
             item.Error = null;
             item.Status = TransferStatus.Queued;
         }
@@ -289,21 +290,49 @@ public sealed class TransferEngine(Func<int> maxParallel)
         item.Plan ??= await PlanAsync(item, ct).ConfigureAwait(false);
         item.TotalBytes = item.Plan.Files.Sum(f => f.Entry.Size);
         item.FilesTotal = item.Plan.Files.Count;
+        var skippedFolders = new List<string>();
         foreach (var dir in item.Plan.Directories)
         {
+            if (skippedFolders.Any(s => Within(item.To, dir, s))) continue;
+            if (await IsLinkAsync(item, dir, ct).ConfigureAwait(false))
+            {
+                if (dir == item.DestinationPath) throw new SymlinkRefusedException(dir);
+                skippedFolders.Add(dir);
+                item.Skipped.Add(item.To.NameOf(dir));
+                continue;
+            }
             if (await item.To.StatAsync(dir, ct).ConfigureAwait(false) is null) await item.To.CreateDirectoryAsync(dir, ct).ConfigureAwait(false);
         }
-        item.BytesDone = item.Plan.Files.Where(f => item.Completed.Contains(f.DestinationPath)).Sum(f => f.Entry.Size);
+        var files = item.Plan.Files.Where(f => !skippedFolders.Any(s => Within(item.To, f.DestinationPath, s))).ToList();
+        item.TotalBytes = files.Sum(f => f.Entry.Size);
+        item.FilesTotal = files.Count;
+        item.BytesDone = files.Where(f => item.Completed.Contains(f.DestinationPath)).Sum(f => f.Entry.Size);
         item.FilesDone = item.Completed.Count;
-        foreach (var file in item.Plan.Files)
+        foreach (var file in files)
         {
             if (item.Completed.Contains(file.DestinationPath)) continue;
             ct.ThrowIfCancellationRequested();
             item.CurrentFile = file.Entry.Name;
-            await CopyFileAsync(item, file, ct).ConfigureAwait(false);
+            try
+            {
+                await CopyFileAsync(item, file, ct).ConfigureAwait(false);
+            }
+            catch (SymlinkRefusedException) when (item.Source.IsDirectory)
+            {
+                item.Skipped.Add(file.Entry.Name);
+            }
             item.Completed.Add(file.DestinationPath);
             item.FilesDone = item.Completed.Count;
         }
+    }
+
+    private static bool Within(IFileSystem fs, string path, string folder) =>
+        path == folder || path.StartsWith(fs.Combine(folder, ""), StringComparison.Ordinal);
+
+    private static async Task<bool> IsLinkAsync(TransferItem item, string path, CancellationToken ct)
+    {
+        if (item.To is not IServerFileSystem server || item.To.Parent(path) is not { } folder) return false;
+        return (await item.Batch.LinksInAsync(server, folder, ct).ConfigureAwait(false)).Contains(item.To.NameOf(path));
     }
 
     private static async Task<TransferPlan> PlanAsync(TransferItem item, CancellationToken ct)
@@ -345,11 +374,11 @@ public sealed class TransferEngine(Func<int> maxParallel)
         var name = to.NameOf(file.DestinationPath);
         var folder = to.Parent(file.DestinationPath) ?? to.RootPath;
         var part = to.Combine(folder, to.IsRemote ? $".{name}.portal-part" : $"{name}.portal-part");
-        if (to.IsRemote)
+        if (to is IServerFileSystem server)
         {
-            var listing = await DestinationListingAsync(item, folder, ct).ConfigureAwait(false);
+            var links = await item.Batch.LinksInAsync(server, folder, ct).ConfigureAwait(false);
             foreach (var n in new[] { name, to.NameOf(part) })
-                if (listing.TryGetValue(n, out var e) && e.IsLink) throw new SymlinkRefusedException(to.Combine(folder, n));
+                if (links.Contains(n)) throw new SymlinkRefusedException(to.Combine(folder, n));
         }
         item.CurrentPartPath = part;
 
@@ -380,15 +409,6 @@ public sealed class TransferEngine(Func<int> maxParallel)
         if (to is IServerFileSystem remote && replaced?.Mode is int mode)
             await BestEffort(() => remote.SetModeAsync(file.DestinationPath, mode, CancellationToken.None)).ConfigureAwait(false);
         item.BytesDone = before + file.Entry.Size;
-    }
-
-    private static async Task<Dictionary<string, FileEntry>> DestinationListingAsync(TransferItem item, string folder, CancellationToken ct)
-    {
-        if (item.DestinationListings.TryGetValue(folder, out var cached)) return cached;
-        var listing = new Dictionary<string, FileEntry>(StringComparer.Ordinal);
-        foreach (var e in await item.To.ListAsync(folder, ct).ConfigureAwait(false)) listing[e.Name] = e;
-        item.DestinationListings[folder] = listing;
-        return listing;
     }
 
     private static async Task<bool> SourceUnchangedAsync(TransferItem item, PlannedFile file, CancellationToken ct)

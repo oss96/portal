@@ -38,6 +38,7 @@ public sealed partial class TransferItemViewModel(TransferItem item, TransfersVi
         TransferStatus.Running => $"{Formatting.Size((long)Item.BytesPerSecond)}/s · {Formatting.TimeLeft(Item.BytesPerSecond > 0 ? (Item.TotalBytes - Item.BytesDone) / Item.BytesPerSecond : double.NaN)}".TrimEnd(' ', '·'),
         TransferStatus.Queued => Item.Resuming ? $"Resuming from {Formatting.Size(Item.BytesDone)}" : "Waiting",
         TransferStatus.Paused => $"Paused at {Math.Round(Percent)} %",
+        TransferStatus.Done when Item.SkippedLinks.Count > 0 => $"Done · skipped {Formatting.Count(Item.SkippedLinks.Count, "symbolic link")}: {string.Join(", ", Item.SkippedLinks.Take(3))}",
         TransferStatus.Done => "Done",
         TransferStatus.Cancelled => "Cancelled",
         _ => Item.Error ?? "Failed",

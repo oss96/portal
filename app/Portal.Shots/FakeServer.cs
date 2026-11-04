@@ -127,6 +127,7 @@ internal sealed class FakeServer : IServerFileSystem
     public Task SetModeAsync(string path, int mode, CancellationToken ct) => Task.CompletedTask;
     public bool CanRunCommands => true;
     public string? NoCommandsReason => null;
+    public Task<IReadOnlySet<string>> SymbolicLinksInAsync(string folder, CancellationToken ct) => Task.FromResult<IReadOnlySet<string>>(new HashSet<string>());
     public Task SetPermissionsAsync(IReadOnlyList<string> paths, PermissionDelta? mode, string? owner, string? group, bool recursive, CancellationToken ct) => Task.CompletedTask;
     public Task<long> DirectorySizeAsync(string path, CancellationToken ct) => Task.FromResult(_entries.Values.Where(e => RemotePath.IsWithin(e.FullPath, path)).Sum(e => e.Size));
 
