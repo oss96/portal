@@ -73,7 +73,11 @@ Each connection opens three SSH channels to the same server:
 - **SFTP for transfers:** kept separate so a big upload doesn't slow down browsing.
 - **Shell commands:** for work that should happen on the server: `rm -rf`, `chmod`/`chown -R`, `cp -a`, `mv`, `du`, `df`, `find`.
 
-Every path in those commands is POSIX-quoted. SMB, WebDAV, NFS and a custom agent were considered and rejected, because none of them can change permissions and owners or reach root-owned paths without a new service on the server.
+Every path in those commands is POSIX-quoted. Commands go to `sh -s` on standard input, so they work whatever the account's login shell is. SMB, WebDAV, NFS and a custom agent were considered and rejected, because none of them can change permissions and owners or reach root-owned paths without a new service on the server.
+
+### Symbolic links
+
+SSH.NET resolves symbolic links before it removes or renames over SFTP. To stay safe, Portal never writes through a link: it skips or refuses links in deletes, renames, moves, copies and uploads. Partial files are created exclusively. When commands are available, a file is replaced with `mv -f`, which replaces a link itself. On accounts limited to SFTP, Portal reads the folder's links again right before replacing a file. That leaves a very short window in which a link created by another process at that exact moment would still be followed.
 
 ## Building
 

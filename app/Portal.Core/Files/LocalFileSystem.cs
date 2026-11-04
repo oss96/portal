@@ -156,9 +156,10 @@ public sealed class LocalFileSystem : IFileSystem
     }
 
     /// <inheritdoc />
-    public async Task WriteFromAsync(string path, Stream source, bool append, IProgress<long> progress, CancellationToken ct)
+    public async Task WriteFromAsync(string path, Stream source, WriteMode mode, IProgress<long> progress, CancellationToken ct)
     {
-        await using var target = new FileStream(path, append ? FileMode.Append : FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16, useAsync: true);
+        var fileMode = mode switch { WriteMode.CreateNew => FileMode.CreateNew, WriteMode.Append => FileMode.Append, _ => FileMode.Create };
+        await using var target = new FileStream(path, fileMode, FileAccess.Write, FileShare.None, 1 << 16, useAsync: true);
         await StreamCopy.CopyAsync(source, target, progress, ct).ConfigureAwait(false);
     }
 

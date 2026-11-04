@@ -72,6 +72,7 @@ public sealed class TransferItem
         Source = source;
         DestinationName = destinationName;
         Replace = replace;
+        PlannedPath = to.Combine(batch.DestinationDirectory, destinationName);
         TotalBytes = source.IsDirectory ? 0 : source.Size;
         FilesTotal = source.IsDirectory ? 0 : 1;
     }
@@ -139,6 +140,8 @@ public sealed class TransferItem
     internal string? CurrentPartPath { get; set; }
     internal string? ResumablePart { get; set; }
     internal List<string> Skipped { get; } = [];
+
+    internal string PlannedPath { get; }
 
     internal void AddSkipped(string destinationPath)
     {

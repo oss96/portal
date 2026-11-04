@@ -122,8 +122,28 @@ public sealed class RemoteFileSystem(Func<string> displayName, SftpClient sftp, 
     }
 
     /// <inheritdoc />
-    public Task PublishAsync(string part, string destination, bool overwrite, CancellationToken ct) =>
-        overwrite ? ReplaceWithSftpAsync(part, destination, ct) : sftp.RenameFileAsync(part, destination, ct);
+    /// <remarks>A new name uses a plain SFTP rename, which fails rather than follows if something appears there. Replacing uses
+    /// <c>mv -f</c> when commands run, which replaces a link itself and refuses a folder; on SFTP-only accounts the folder's links are
+    /// read again right before an SFTP rename, which narrows but can't close the window for a link created at that moment.</remarks>
+    public async Task PublishAsync(string part, string destination, bool overwrite, CancellationToken ct)
+    {
+        if (!overwrite)
+        {
+            await sftp.RenameFileAsync(part, destination, ct).ConfigureAwait(false);
+            return;
+        }
+        if (shell.IsAvailable)
+        {
+            var d = PosixShell.Quote(destination);
+            var folder = PosixShell.Quote($"“{RemotePath.NameOf(destination)}” is a folder, so it can’t be replaced by a file.");
+            await shell.RunCheckedAsync($"if [ -d {d} ]; then echo {folder} >&2; exit 21; fi; mv -f -- {PosixShell.Quote(part)} {d}", ct).ConfigureAwait(false);
+            return;
+        }
+        var links = await SymbolicLinksInAsync(RemotePath.Parent(destination) ?? "/", ct).ConfigureAwait(false);
+        foreach (var path in new[] { destination, part })
+            if (links.Contains(RemotePath.NameOf(path))) throw new SymlinkRefusedException(path);
+        await ReplaceWithSftpAsync(part, destination, ct).ConfigureAwait(false);
+    }
 
     /// <inheritdoc />
     public async Task<IReadOnlySet<string>> SymbolicLinksInAsync(string folder, CancellationToken ct)
@@ -208,11 +228,11 @@ public sealed class RemoteFileSystem(Func<string> displayName, SftpClient sftp, 
     }
 
     /// <inheritdoc />
-    public async Task WriteFromAsync(string path, Stream source, bool append, IProgress<long> progress, CancellationToken ct)
+    public async Task WriteFromAsync(string path, Stream source, WriteMode mode, IProgress<long> progress, CancellationToken ct)
     {
-        if (!append)
+        if (mode != WriteMode.Append)
         {
-            await sftp.UploadFileAsync(source, path, true, new InlineProgress<UploadFileProgressReport>(r => progress.Report((long)r.TotalBytesUploaded)), ct).ConfigureAwait(false);
+            await sftp.UploadFileAsync(source, path, mode == WriteMode.Overwrite, new InlineProgress<UploadFileProgressReport>(r => progress.Report((long)r.TotalBytesUploaded)), ct).ConfigureAwait(false);
             return;
         }
         await using var target = await sftp.OpenAsync(path, FileMode.Append, FileAccess.Write, ct).ConfigureAwait(false);

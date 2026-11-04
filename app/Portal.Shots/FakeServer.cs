@@ -105,7 +105,7 @@ internal sealed class FakeServer : IServerFileSystem
         }
     }
 
-    public async Task WriteFromAsync(string path, Stream source, bool append, IProgress<long> progress, CancellationToken ct)
+    public async Task WriteFromAsync(string path, Stream source, WriteMode mode, IProgress<long> progress, CancellationToken ct)
     {
         var buffer = new byte[64 * 1024];
         long done = 0;

@@ -288,6 +288,35 @@ public sealed class SshIntegrationTests(SshServerFixture server) : IDisposable
     }
 
     [SshFact]
+    public async Task Publishing_and_part_files_never_follow_a_link_created_at_the_last_moment()
+    {
+        await using (var session = await SshConnector.ConnectAsync(Profile(), new Prompts(), new Progress<ConnectStage>(), default))
+        {
+            var fs = session.TransferFiles;
+            var h = fs.HomeDirectory;
+            await server.Exec($"cd {h} && rm -rf late && mkdir -p late/out late/in && echo target > late/out/t.txt && echo staged > late/in/.x.part && ln -s ../out/t.txt late/in/x.txt && ln -s ../out/t.txt late/in/.y.part");
+            await fs.PublishAsync($"{h}/late/in/.x.part", $"{h}/late/in/x.txt", overwrite: true, default);
+            Assert.Equal("target", (await server.Exec($"cat {h}/late/out/t.txt")).Trim());
+            Assert.Equal("staged", (await server.Exec($"cat {h}/late/in/x.txt && test ! -L {h}/late/in/x.txt")).Trim());
+            using var data = new MemoryStream("evil"u8.ToArray());
+            await Assert.ThrowsAnyAsync<Exception>(() => fs.WriteFromAsync($"{h}/late/in/.y.part", data, WriteMode.CreateNew, new Progress<long>(), default));
+            Assert.Equal("target", (await server.Exec($"cat {h}/late/out/t.txt")).Trim());
+            await server.Exec($"rm -rf {h}/late");
+        }
+
+        var sftpOnly = new ServerProfile { Name = "SFTP only", Host = "127.0.0.1", Port = server.SftpOnlyPort, User = server.User };
+        await using (var session = await SshConnector.ConnectAsync(sftpOnly, new Prompts(), new Progress<ConnectStage>(), default))
+        {
+            var fs = session.TransferFiles;
+            var h = fs.HomeDirectory;
+            await server.ExecSftpOnly($"cd {h} && rm -rf late && mkdir -p late/out late/in && echo target > late/out/t.txt && echo staged > late/in/.x.part && ln -s ../out/t.txt late/in/x.txt");
+            await Assert.ThrowsAsync<SymlinkRefusedException>(() => fs.PublishAsync($"{h}/late/in/.x.part", $"{h}/late/in/x.txt", overwrite: true, default));
+            Assert.Equal("target", (await server.ExecSftpOnly($"cat {h}/late/out/t.txt")).Trim());
+            await server.ExecSftpOnly($"rm -rf {h}/late");
+        }
+    }
+
+    [SshFact]
     public async Task A_known_server_that_hangs_up_is_not_reported_as_a_changed_identity()
     {
         using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);

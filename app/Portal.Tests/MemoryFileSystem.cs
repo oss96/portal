@@ -79,8 +79,10 @@ internal sealed class MemoryFileSystem : IFileSystem
         progress.Report(data.Length - offset);
     }
 
-    public async Task WriteFromAsync(string path, Stream source, bool append, IProgress<long> progress, CancellationToken ct)
+    public async Task WriteFromAsync(string path, Stream source, WriteMode mode, IProgress<long> progress, CancellationToken ct)
     {
+        var append = mode == WriteMode.Append;
+        if (mode == WriteMode.CreateNew && _nodes.ContainsKey(path)) throw new IOException("exists");
         if (append) AppendedWrites++;
         var existing = append && _nodes.TryGetValue(path, out var n) ? n.Data : [];
         using var buffer = new MemoryStream();

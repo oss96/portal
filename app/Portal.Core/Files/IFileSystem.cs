@@ -1,5 +1,16 @@
 namespace Portal.Core.Files;
 
+/// <summary>How a write treats an existing file.</summary>
+public enum WriteMode
+{
+    /// <summary>Fail if anything, including a symbolic link, already has the name.</summary>
+    CreateNew,
+    /// <summary>Replace the contents; a link is followed to the file it points to.</summary>
+    Overwrite,
+    /// <summary>Add to the end, for resuming.</summary>
+    Append,
+}
+
 /// <summary>A browsable file system: this PC or a connected server.</summary>
 public interface IFileSystem
 {
@@ -48,8 +59,8 @@ public interface IFileSystem
     /// <summary>Copies a file's bytes from <paramref name="offset"/> into <paramref name="destination"/>.</summary>
     Task ReadToAsync(string path, Stream destination, long offset, IProgress<long> progress, CancellationToken ct);
 
-    /// <summary>Writes <paramref name="source"/> to a file, appending when resuming.</summary>
-    Task WriteFromAsync(string path, Stream source, bool append, IProgress<long> progress, CancellationToken ct);
+    /// <summary>Writes <paramref name="source"/> to a file in the given <paramref name="mode"/>.</summary>
+    Task WriteFromAsync(string path, Stream source, WriteMode mode, IProgress<long> progress, CancellationToken ct);
 
     /// <summary>Sets a file's modification time.</summary>
     Task SetModifiedAsync(string path, DateTime modifiedUtc, CancellationToken ct);

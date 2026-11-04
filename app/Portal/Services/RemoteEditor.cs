@@ -85,13 +85,13 @@ public sealed class RemoteEditor(IServerSession session, ToastService toasts) : 
             await using var source = new FileStream(local, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             if (links.Contains(name) || isLink)
             {
-                await fs.WriteFromAsync(remote, source, append: false, new Progress<long>(), CancellationToken.None);
+                await fs.WriteFromAsync(remote, source, WriteMode.Overwrite, new Progress<long>(), CancellationToken.None);
             }
             else
             {
                 var mode = (await fs.StatAsync(remote, CancellationToken.None))?.Mode;
-                await fs.WriteFromAsync(part, source, append: false, new Progress<long>(), CancellationToken.None);
-                await fs.RenameAsync(part, remote, overwrite: true, CancellationToken.None);
+                await fs.WriteFromAsync(part, source, WriteMode.CreateNew, new Progress<long>(), CancellationToken.None);
+                await fs.PublishAsync(part, remote, overwrite: true, CancellationToken.None);
                 if (mode is int m) await fs.SetModeAsync(remote, m, CancellationToken.None);
             }
             toasts.Show(ToastKind.Success, $"Saved {RemotePath.NameOf(remote)} to {session.Profile.Name}", remote);
