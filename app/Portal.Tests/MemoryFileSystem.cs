@@ -63,6 +63,8 @@ internal sealed class MemoryFileSystem : IFileSystem
         return Task.CompletedTask;
     }
 
+    public Task PublishAsync(string part, string destination, bool overwrite, CancellationToken ct) => RenameAsync(part, destination, overwrite, ct);
+
     public Task DeleteAsync(IReadOnlyList<string> paths, CancellationToken ct)
     {
         foreach (var p in paths)

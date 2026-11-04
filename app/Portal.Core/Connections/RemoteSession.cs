@@ -23,8 +23,8 @@ public sealed class RemoteSession : IServerSession
         _shell = shell;
         Latency = latency;
         _hasShell = remoteShell.IsAvailable;
-        Files = new RemoteFileSystem(profile.Name, browse, remoteShell, names);
-        TransferFiles = new RemoteFileSystem(profile.Name, transfer, remoteShell, names);
+        Files = new RemoteFileSystem(() => profile.Name, browse, remoteShell, names);
+        TransferFiles = new RemoteFileSystem(() => profile.Name, transfer, remoteShell, names);
         foreach (var c in new BaseClient[] { browse, transfer, shell }) c.ErrorOccurred += (_, _) => OnLost();
     }
 

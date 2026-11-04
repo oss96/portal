@@ -101,6 +101,10 @@ public sealed class LocalFileSystem : IFileSystem
         else File.Move(from, to, overwrite);
     }, ct);
 
+    /// <inheritdoc />
+    public Task PublishAsync(string part, string destination, bool overwrite, CancellationToken ct) =>
+        Task.Run(() => File.Move(part, destination, overwrite), ct);
+
     /// <summary>Moves the entries to the Recycle Bin.</summary>
     public Task DeleteAsync(IReadOnlyList<string> paths, CancellationToken ct) => Task.Run(() =>
     {

@@ -194,6 +194,14 @@ public sealed partial class PaneViewModel : ObservableObject
     /// <summary>Moves keyboard focus into the list.</summary>
     public void Focus() => FocusRequested?.Invoke();
 
+    /// <summary>Refreshes labels that show the file system's name, after a rename.</summary>
+    public void NotifyTitle()
+    {
+        OnPropertyChanged(nameof(Title));
+        OnPropertyChanged(nameof(FolderName));
+        OnPropertyChanged(nameof(FilterPlaceholder));
+    }
+
     /// <summary>Re-applies the hidden-files setting.</summary>
     public void RefreshFilter()
     {

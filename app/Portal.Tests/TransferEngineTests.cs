@@ -248,6 +248,27 @@ public sealed class TransferEngineTests : IDisposable
         Assert.Equal(["same (1).txt", "same (2).txt", "same.txt"], slow.Snapshot().Select(i => i.DestinationName).Order(StringComparer.Ordinal));
     }
 
+    [Fact]
+    public async Task A_file_that_appears_while_uploading_is_kept_and_the_upload_gets_a_new_name()
+    {
+        var file = LocalFile("late.txt", "mine");
+        var parallel = 0;
+        var gate = new TransferEngine(() => parallel);
+        await gate.EnqueueAsync(_pc, [await Stat(file)], _server, "/data", ConflictPolicy.Ask, _ => throw new InvalidOperationException(), default);
+        _server.AddFile("/data/late.txt", "someone else's");
+        var item = gate.Snapshot().Single();
+        var finished = new TaskCompletionSource();
+        gate.BatchFinished += (_, _) => finished.TrySetResult();
+        gate.Pause(item);
+        parallel = 1;
+        gate.Resume(item);
+        await finished.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal("someone else's", _server.Read("/data/late.txt"));
+        Assert.Equal("mine", _server.Read("/data/late (1).txt"));
+        Assert.Equal("late (1).txt", item.DestinationName);
+    }
+
     [Theory]
     [InlineData("..\\evil.txt", ".._evil.txt")]
     [InlineData("a:b*c?.txt", "a_b_c_.txt")]

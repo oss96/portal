@@ -111,6 +111,7 @@ public sealed partial class ServerCardViewModel(ServerProfile profile, MainViewM
         Steps.Clear();
         ErrorTitle = null;
         ErrorDetail = null;
+        OnPropertyChanged(nameof(Title));
         OnPropertyChanged(nameof(Subtitle));
         OnPropertyChanged(nameof(ConnectText));
     }

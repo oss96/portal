@@ -104,7 +104,9 @@ public sealed partial class BrowserViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(ServerName));
         OnPropertyChanged(nameof(ConnectionText));
         OnPropertyChanged(nameof(StorageHeader));
+        Remote.NotifyTitle();
         BuildServers();
+        UpdateDetails();
     }
 
     /// <summary>"Connected to Tower as root" or the lost-connection notice.</summary>

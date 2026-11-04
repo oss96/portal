@@ -81,10 +81,10 @@ public sealed class TransferEngine(Func<int> maxParallel)
         if (from.IsRemote == to.IsRemote) throw new InvalidOperationException("Transfers go between this PC and a server.");
         var direction = to.IsRemote ? TransferDirection.Upload : TransferDirection.Download;
         var names = to.IsRemote ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
+        var reserved = Unfinished(to).Where(p => to.Parent(p) is { } parent && SameFolder(to, parent, destinationDirectory)).Select(to.NameOf).ToHashSet(names);
         var existing = new Dictionary<string, FileEntry>(names);
         foreach (var e in await to.ListAsync(destinationDirectory, ct).ConfigureAwait(false)) existing.TryAdd(e.Name, e);
         var taken = new HashSet<string>(existing.Keys, names);
-        var reserved = Unfinished(to).Where(p => to.Parent(p) is { } parent && SameFolder(to, parent, destinationDirectory)).Select(to.NameOf).ToHashSet(names);
         taken.UnionWith(reserved);
         var conflicts = sources.Count(s => existing.ContainsKey(to.IsRemote ? s.Name : LocalFileSystem.SafeName(s.Name)));
         ConflictChoice? standing = policy switch
@@ -445,12 +445,20 @@ public sealed class TransferEngine(Func<int> maxParallel)
             await item.From.ReadToAsync(file.SourcePath, target, offset, progress, ct).ConfigureAwait(false);
         }
 
-        var replaced = item.Replace ? await to.StatAsync(file.DestinationPath, ct).ConfigureAwait(false) : null;
-        await to.RenameAsync(part, file.DestinationPath, overwrite: true, ct).ConfigureAwait(false);
+        var destination = file.DestinationPath;
+        var replaced = item.Replace ? await to.StatAsync(destination, ct).ConfigureAwait(false) : null;
+        if (!item.Replace && await to.StatAsync(destination, ct).ConfigureAwait(false) is not null)
+        {
+            var taken = (await to.ListAsync(folder, ct).ConfigureAwait(false)).Select(e => e.Name).ToHashSet(to.IsRemote ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase);
+            var fresh = UniqueName(taken, name);
+            if (destination == item.DestinationPath) item.DestinationName = fresh;
+            destination = to.Combine(folder, fresh);
+        }
+        await to.PublishAsync(part, destination, overwrite: item.Replace, ct).ConfigureAwait(false);
         item.CurrentPartPath = null;
-        await BestEffort(() => to.SetModifiedAsync(file.DestinationPath, file.Entry.ModifiedUtc, CancellationToken.None)).ConfigureAwait(false);
+        await BestEffort(() => to.SetModifiedAsync(destination, file.Entry.ModifiedUtc, CancellationToken.None)).ConfigureAwait(false);
         if (to is IServerFileSystem remote && replaced?.Mode is int mode)
-            await BestEffort(() => remote.SetModeAsync(file.DestinationPath, mode, CancellationToken.None)).ConfigureAwait(false);
+            await BestEffort(() => remote.SetModeAsync(destination, mode, CancellationToken.None)).ConfigureAwait(false);
         item.BytesDone = before + file.Entry.Size;
     }
 

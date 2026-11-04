@@ -71,6 +71,8 @@ internal sealed class FakeServer : IServerFileSystem
 
     public Task<FileEntry?> StatAsync(string path, CancellationToken ct) => Task.FromResult(_entries.GetValueOrDefault(RemotePath.Normalize(path)));
 
+    public Task PublishAsync(string part, string destination, bool overwrite, CancellationToken ct) => RenameAsync(part, destination, overwrite, ct);
+
     public Task CreateDirectoryAsync(string path, CancellationToken ct)
     {
         Dir(path, "root", "root", 0x1ED, DateTime.UtcNow.ToString("s"));

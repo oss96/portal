@@ -89,7 +89,7 @@ public sealed class TransferItem
     public FileEntry Source { get; }
 
     /// <summary>Name the item gets at the destination.</summary>
-    public string DestinationName { get; }
+    public string DestinationName { get; internal set; }
 
     /// <summary>Full destination path of the item.</summary>
     public string DestinationPath => To.Combine(Batch.DestinationDirectory, DestinationName);

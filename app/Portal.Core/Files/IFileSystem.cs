@@ -39,6 +39,9 @@ public interface IFileSystem
     /// <summary>Renames or moves an entry within this file system.</summary>
     Task RenameAsync(string from, string to, bool overwrite, CancellationToken ct);
 
+    /// <summary>Moves a finished part file into place; without <paramref name="overwrite"/> an existing target makes it fail instead of being replaced.</summary>
+    Task PublishAsync(string part, string destination, bool overwrite, CancellationToken ct);
+
     /// <summary>Deletes entries; folders are deleted with everything inside.</summary>
     Task DeleteAsync(IReadOnlyList<string> paths, CancellationToken ct);
 

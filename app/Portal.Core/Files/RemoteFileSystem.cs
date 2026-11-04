@@ -8,10 +8,10 @@ using Renci.SshNet.Sftp;
 namespace Portal.Core.Files;
 
 /// <summary>A server's file system: SFTP for browsing and file data, shell commands for bulk work.</summary>
-public sealed class RemoteFileSystem(string displayName, SftpClient sftp, RemoteShell shell, AccountNames names) : IServerFileSystem
+public sealed class RemoteFileSystem(Func<string> displayName, SftpClient sftp, RemoteShell shell, AccountNames names) : IServerFileSystem
 {
     /// <inheritdoc />
-    public string DisplayName => displayName;
+    public string DisplayName => displayName();
 
     /// <inheritdoc />
     public bool IsRemote => true;
@@ -120,6 +120,10 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
         await RefuseLinkAsync(from, ct).ConfigureAwait(false);
         await sftp.RenameFileAsync(from, to, ct).ConfigureAwait(false);
     }
+
+    /// <inheritdoc />
+    public Task PublishAsync(string part, string destination, bool overwrite, CancellationToken ct) =>
+        overwrite ? ReplaceWithSftpAsync(part, destination, ct) : sftp.RenameFileAsync(part, destination, ct);
 
     /// <inheritdoc />
     public async Task<IReadOnlySet<string>> SymbolicLinksInAsync(string folder, CancellationToken ct)
@@ -264,8 +268,8 @@ public sealed class RemoteFileSystem(string displayName, SftpClient sftp, Remote
 
     /// <inheritdoc />
     public string? NoCommandsReason => shell.IsAvailable ? null : shell.IsSftpOnly
-        ? $"{displayName} allows file transfers only for this account."
-        : $"Portal couldn’t run commands on {displayName} for this connection. Reconnecting may help.";
+        ? $"{DisplayName} allows file transfers only for this account."
+        : $"Portal couldn’t run commands on {DisplayName} for this connection. Reconnecting may help.";
 
     /// <summary>Total size of a folder and everything inside it, measured on the server.</summary>
     public async Task<long> DirectorySizeAsync(string path, CancellationToken ct)
