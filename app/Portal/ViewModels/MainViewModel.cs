@@ -127,7 +127,7 @@ public sealed partial class MainViewModel : ObservableObject, IConnectPrompts
                 $"Connecting to {card.Title} closes the connection to {Browser.Session.Profile.Name} and cancels its unfinished transfers. Partial files are removed.", $"Connect to {card.Title}", "Stay"));
             if (!go) return;
         }
-        Current = Connect;
+        Current = Current == Connect ? Connect : new ConnectingViewModel(this, card);
         var ct = card.Begin();
         try
         {
@@ -146,10 +146,12 @@ public sealed partial class MainViewModel : ObservableObject, IConnectPrompts
         catch (Exception) when (ct.IsCancellationRequested)
         {
             card.Reset();
+            LeaveConnecting(card);
         }
         catch (ConnectCancelledException)
         {
             card.Reset();
+            LeaveConnecting(card);
         }
         catch (Exception e)
         {
@@ -157,6 +159,14 @@ public sealed partial class MainViewModel : ObservableObject, IConnectPrompts
             var (title, detail) = FriendlyError.ForConnect(e, target.HostName, target.Port, target.User);
             card.Fail(title, detail);
         }
+    }
+
+    /// <summary>Leaves the connecting screen for <paramref name="card"/>: back to the open connection, or to the connect screen.</summary>
+    public void LeaveConnecting(ServerCardViewModel card)
+    {
+        if (Current is not ConnectingViewModel c || c.Card != card) return;
+        if (Browser is not null) ShowBrowser();
+        else ShowConnect();
     }
 
     /// <summary>Closes the current connection and returns to the connect screen.</summary>
@@ -172,8 +182,8 @@ public sealed partial class MainViewModel : ObservableObject, IConnectPrompts
         OnPropertyChanged(nameof(Title));
     }
 
-    /// <summary>Connects at startup to a server given on the command line or used last.</summary>
-    public async Task StartAsync(string? commandLineTarget, int? commandLinePort)
+    /// <summary>Picks the server to connect to at startup, given on the command line or used last, and shows the connecting screen for it.</summary>
+    public ServerCardViewModel? PrepareStart(string? commandLineTarget, int? commandLinePort)
     {
         ServerCardViewModel? card = null;
         if (commandLineTarget is { Length: > 0 })
@@ -193,6 +203,13 @@ public sealed partial class MainViewModel : ObservableObject, IConnectPrompts
         {
             card = Connect.Cards.FirstOrDefault(c => c.Profile.Id == id);
         }
+        if (card is not null) Current = new ConnectingViewModel(this, card);
+        return card;
+    }
+
+    /// <summary>Checks for updates and connects to the server <see cref="PrepareStart"/> picked.</summary>
+    public async Task StartAsync(ServerCardViewModel? card)
+    {
         if (Preferences.CheckForUpdates) _ = Updates.CheckAsync(quiet: true);
         if (card is not null) await ConnectAsync(card);
     }
