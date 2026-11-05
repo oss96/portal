@@ -127,7 +127,8 @@ public sealed partial class MainViewModel : ObservableObject, IConnectPrompts
                 $"Connecting to {card.Title} closes the connection to {Browser.Session.Profile.Name} and cancels its unfinished transfers. Partial files are removed.", $"Connect to {card.Title}", "Stay"));
             if (!go) return;
         }
-        Current = Current == Connect ? Connect : new ConnectingViewModel(this, card);
+        var screen = Current == Connect ? null : new ConnectingViewModel(this, card);
+        Current = (object?)screen ?? Connect;
         var ct = card.Begin();
         try
         {
@@ -145,28 +146,34 @@ public sealed partial class MainViewModel : ObservableObject, IConnectPrompts
         }
         catch (Exception) when (ct.IsCancellationRequested)
         {
-            card.Reset();
-            LeaveConnecting(card);
+            EndAttempt(card, ct, screen);
         }
         catch (ConnectCancelledException)
         {
-            card.Reset();
-            LeaveConnecting(card);
+            EndAttempt(card, ct, screen);
         }
         catch (Exception e)
         {
+            if (!card.IsAttempt(ct)) return;
             var target = SshConnector.Resolve(card.Profile);
             var (title, detail) = FriendlyError.ForConnect(e, target.HostName, target.Port, target.User);
             card.Fail(title, detail);
         }
     }
 
-    /// <summary>Leaves the connecting screen for <paramref name="card"/>: back to the open connection, or to the connect screen.</summary>
-    public void LeaveConnecting(ServerCardViewModel card)
+    /// <summary>Leaves <paramref name="screen"/> if it is still shown: back to the open connection, or to the connect screen.</summary>
+    public void LeaveConnecting(ConnectingViewModel? screen)
     {
-        if (Current is not ConnectingViewModel c || c.Card != card) return;
+        if (screen is null || Current != screen) return;
         if (Browser is not null) ShowBrowser();
         else ShowConnect();
+    }
+
+    private void EndAttempt(ServerCardViewModel card, CancellationToken attempt, ConnectingViewModel? screen)
+    {
+        if (!card.IsAttempt(attempt)) return;
+        card.Reset();
+        LeaveConnecting(screen);
     }
 
     /// <summary>Closes the current connection and returns to the connect screen.</summary>

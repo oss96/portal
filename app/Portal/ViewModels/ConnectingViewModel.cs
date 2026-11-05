@@ -31,7 +31,7 @@ public sealed partial class ConnectingViewModel
     private void Cancel()
     {
         Card.CancelCommand.Execute(null);
-        Main.LeaveConnecting(Card);
+        Main.LeaveConnecting(this);
     }
 
     [RelayCommand]
