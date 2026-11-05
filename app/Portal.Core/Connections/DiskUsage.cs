@@ -18,7 +18,7 @@ public sealed record DiskUsage(string MountPoint, long TotalBytes, long UsedByte
         var list = new List<DiskUsage>();
         foreach (var raw in output.Split('\n').Skip(1))
         {
-            var f = raw.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var f = raw.TrimEnd('\r').Split(' ', StringSplitOptions.RemoveEmptyEntries);
             if (f.Length < 6) continue;
             var source = f[0];
             var mount = string.Join(' ', f[5..]);
