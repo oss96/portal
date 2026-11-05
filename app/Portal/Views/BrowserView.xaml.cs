@@ -52,8 +52,9 @@ public partial class BrowserView : UserControl
     private void ApplyLayout()
     {
         if (_vm is null) return;
-        LocalColumn.Width = _vm.ShowLocalPane ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
+        LocalColumn.Width = _vm.ShowLocalPane ? new GridLength(1, GridUnitType.Star) : GridLength.Auto;
         LocalList.Visibility = _vm.ShowLocalPane ? Visibility.Visible : Visibility.Collapsed;
+        LocalRail.Visibility = _vm.ShowLocalPane ? Visibility.Collapsed : Visibility.Visible;
         PaneSplitter.Visibility = LocalList.Visibility;
         var details = _vm.ShowDetails && (!_vm.ShowLocalPane || ActualWidth == 0 || ActualWidth >= SplitWithDetailsMinWidth);
         DetailsColumn.Width = details ? new GridLength(296) : new GridLength(0);
@@ -71,4 +72,11 @@ public partial class BrowserView : UserControl
     }
 
     private void OnAddServer(object sender, RoutedEventArgs e) => _vm?.Main.ShowConnect();
+
+    private void OnRailDragEnter(object sender, DragEventArgs e)
+    {
+        e.Effects = DragDropEffects.None;
+        e.Handled = true;
+        if (_vm is not null && e.Data.GetData(DragPayload.Format) is DragPayload { Pane.IsRemote: true }) _vm.ShowLocalPane = true;
+    }
 }

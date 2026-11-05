@@ -4,7 +4,7 @@
              xmlns:vm="clr-namespace:Portal.ViewModels"
              x:Name="Root" AllowDrop="True"
              DragEnter="OnDragOver" DragOver="OnDragOver" DragLeave="OnDragLeave" Drop="OnDrop"
-             PreviewMouseDown="OnAnyMouseDown" GotKeyboardFocus="OnFocused">
+             PreviewMouseDown="OnAnyMouseDown" PreviewMouseUp="OnAnyMouseUp" GotKeyboardFocus="OnFocused">
     <Grid Background="{DynamicResource LayerFillColorDefaultBrush}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />
@@ -22,6 +22,12 @@
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <StackPanel Orientation="Horizontal">
+                <StackPanel x:Name="FoldGroup" Orientation="Horizontal" Visibility="Collapsed">
+                    <Button Style="{StaticResource IconButton}" Click="OnFold" ToolTip="Hide This PC" AutomationProperties.Name="Hide This PC">
+                        <TextBlock Style="{StaticResource Icon}" Text="&#xE76B;" FontSize="12" />
+                    </Button>
+                    <Rectangle Style="{StaticResource Divider}" />
+                </StackPanel>
                 <Button Style="{StaticResource IconButton}" Command="{Binding GoBackCommand}" IsEnabled="{Binding CanGoBack}" ToolTip="Back (Alt+Left)" AutomationProperties.Name="Back">
                     <TextBlock Style="{StaticResource Icon}" Text="&#xE72B;" />
                 </Button>

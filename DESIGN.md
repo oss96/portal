@@ -7,9 +7,9 @@ The interactive prototype is `docs/design/portal-prototype.html`. The app follow
 ```
 ┌ command bar ───────────────────────────────────────────────────────────────┐
 │ New folder | Upload/Download  Rename  Permissions  Delete  Refresh        │
-│                       selection summary | Hidden files  This PC  Details  │
-├ sidebar ─────┬ [This PC pane] ┬ server pane ───────────┬ details ───────────┤
-│ <server>     │                │ ← → ↑  Tower  / › mnt › │ icon, name, kind   │
+│                               selection summary | Hidden files  Details   │
+├ sidebar ─────┬ [This PC pane  ┬ server pane ───────────┬ details ───────────┤
+│ <server>     │  or rail]      │ ← → ↑  Tower  / › mnt › │ icon, name, kind   │
 │  Home, Root, │                │ name  modified  size    │ location, modified │
 │  shares, pins│                │ permissions  owner      │ size / Calculate   │
 │ Storage      │                │                         │ owner, permissions │
@@ -21,7 +21,7 @@ The interactive prototype is `docs/design/portal-prototype.html`. The app follow
 ```
 
 - **Sidebar:** 232 px. **Details pane:** 296 px.
-- **Two panes:** the This PC pane shares the middle with the server pane.
+- **Two panes:** the This PC pane shares the middle with the server pane. While it's closed, a 44 px rail (`PaneRail` in `Themes/Styles.xaml`) holds its place at the left edge of the file area. Click the rail, or drag server files over it, to open the pane. The ‹ button at the far left of the This PC pane folds it back into the rail. Ctrl+K also has Show and Hide This PC.
 - **Narrow windows:** when both panes are open and the window is narrower than 1440 px, the details pane steps aside so the file lists keep room for their columns.
 - **Transfers:** a flyout above the status bar, not a permanent panel. The status bar always shows the count, time left and overall progress.
 - **Dialogs:** in-window over a dimmed backdrop. Dialogs that need an answer (conflict, host key) ignore clicks on the backdrop.
@@ -57,6 +57,7 @@ Portal uses WPF's built-in Fluent theme (`ThemeMode`) and its resource keys, so 
   - Pressing an already-selected row keeps the multi-selection, so it can be dragged.
   - Clicking empty space clears the selection.
 - **Keyboard:** every command has a key; the list is in README.md. Focus shows as a stroke around the row.
+- **Mouse back and forward:** buttons 4 and 5 go back and forward in the pane under the pointer.
 - **Commands act on the active pane:** a 2 px accent bar marks it when both panes are open. Upload and Download swap with the active side.
 - **Destructive actions name the target:**
   - Deleting on a server says "for good" and "can't be undone", and uses a red confirm button.
@@ -82,3 +83,9 @@ Portal uses WPF's built-in Fluent theme (`ThemeMode`) and its resource keys, so 
 - Name the server by its saved name ("Tower") and this computer "This PC".
 - Use "folder", not "directory".
 - Talk about "permissions" and "owner" in the UI. The details pane spells the mode out: "Owner can read, write, run".
+
+## Changes
+
+Newest first.
+
+- **2026-11-05: This PC toggle moved to where the pane opens.** The toggle sat at the far right of the command bar, but the pane opens at the far left of the file area. It's now a collapsed rail in the pane's place, with a fold button in the pane's header. Proposal: `design/proposals/2026-11-05-this-pc-toggle.html`, option C (collapsed rail), chosen by the owner over A (pane-edge button) and B (sidebar switch).

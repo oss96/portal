@@ -63,6 +63,12 @@ public partial class FileListView : UserControl
         PermissionsColumn.Visibility = _pane.IsRemote ? Visibility.Visible : Visibility.Collapsed;
         OwnerColumn.Visibility = _pane.IsRemote ? Visibility.Visible : Visibility.Collapsed;
         ActiveBar.Visibility = _pane.IsActive ? Visibility.Visible : Visibility.Collapsed;
+        FoldGroup.Visibility = _pane.IsRemote ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private void OnFold(object sender, RoutedEventArgs e)
+    {
+        if (Browser is { } b) b.ShowLocalPane = false;
     }
 
     private void OnPaneChanged(object? sender, PropertyChangedEventArgs e)
@@ -114,6 +120,20 @@ public partial class FileListView : UserControl
     }
 
     private void OnAnyMouseDown(object sender, MouseButtonEventArgs e) => Activate();
+
+    private void OnAnyMouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_pane is null) return;
+        var command = e.ChangedButton switch
+        {
+            MouseButton.XButton1 => _pane.GoBackCommand,
+            MouseButton.XButton2 => _pane.GoForwardCommand,
+            _ => null,
+        };
+        if (command is null) return;
+        e.Handled = true;
+        if (command.CanExecute(null)) command.Execute(null);
+    }
 
     private void OnFocused(object sender, KeyboardFocusChangedEventArgs e) => Activate();
 
