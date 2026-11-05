@@ -1,0 +1,272 @@
+<!doctype html>
+<!--
+  System, from DESIGN.md and the running app (colors sampled from the owner's screenshot, dark theme):
+  window #202020, panes #272727, sidebar #2d2a2c, controls #353335, column header #302f30, card #343232,
+  accent #4cc2ff (Windows accent), success #6ccb5f, folder #E0A93B, stroke rgba(255,255,255,.08).
+  Type: Segoe UI Variable 12 / 14, Cascadia Mono 12 for modes. Icons: Segoe Fluent Icons.
+  Layout: sidebar 232, details 296, rows 32, spacing 4/8/12/16. Frames are drawn at 1333 x 778 (the
+  screenshot's size at 150 %) and scaled to fit.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Portal · This PC toggle</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #f4f1ec; color: #222; font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif; }
+  header.page { max-width: 1440px; margin: 0 auto; padding: 40px 48px 8px; }
+  header.page h1 { font: 600 28px "Segoe UI Variable Display", "Segoe UI", sans-serif; margin: 0 0 8px; }
+  header.page p { margin: 0; color: #555; font-size: 14px; line-height: 1.5; max-width: 900px; text-wrap: pretty; }
+  .canvas { max-width: 1440px; margin: 0 auto; padding: 24px 48px 64px; display: grid; gap: 40px; }
+  .cell { background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.05); }
+  .cell-label { padding: 16px 20px; border-bottom: 1px solid #eee; display: grid; grid-template-columns: 1fr auto; gap: 4px 24px; }
+  .cell-label h3 { margin: 0; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: #555; font-weight: 600; }
+  .cell-label p { margin: 0; font-size: 13px; color: #666; line-height: 1.45; grid-column: 1; text-wrap: pretty; }
+  .impact { grid-row: 1 / span 2; grid-column: 2; align-self: start; font-size: 12px; padding: 4px 10px; border-radius: 999px; background: #eef3f8; color: #24507a; white-space: nowrap; }
+  .impact.rule { background: #f6efe2; color: #7a5317; }
+  .impact.variant { background: #efe9f7; color: #533a7a; }
+  .pair { display: grid; grid-template-columns: 1fr; gap: 24px; padding: 16px; background: #fafafa; }
+  .pair.one { grid-template-columns: 1fr; }
+  .state { font-size: 12px; color: #777; margin: 0 0 6px 2px; }
+  .shot { width: 100%; display: block; border-radius: 4px; }
+  .fit { container-type: inline-size; }
+  .scale { width: 1333px; height: 778px; transform-origin: 0 0; }
+  .holder { position: relative; overflow: hidden; border-radius: 4px; }
+
+  .app { --mica:#202020; --layer:#272727; --side:#2d2a2c; --ctl:#353335; --head:#302f30; --card:#343232; --hover:rgba(255,255,255,.06);
+    --stroke:rgba(255,255,255,.08); --text:#fff; --text2:rgba(255,255,255,.78); --text3:rgba(255,255,255,.5); --accent:#4cc2ff; --ok:#6ccb5f; --folder:#E0A93B;
+    width: 1333px; height: 778px; background: var(--mica); color: var(--text); font: 14px "Segoe UI Variable Text", "Segoe UI", sans-serif;
+    display: grid; grid-template-rows: 22px 40px 1fr 24px; }
+  .ic { font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets"; font-size: 14px; line-height: 1; }
+  .title { display: flex; align-items: center; gap: 8px; padding: 0 12px; font-size: 12px; color: var(--text2); }
+  .cmd { display: flex; align-items: center; padding: 0 8px; border-bottom: 1px solid var(--stroke); gap: 2px; }
+  .btn { display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px; border-radius: 4px; color: var(--text); white-space: nowrap; }
+  .btn .ic { color: var(--text2); }
+  .btn.dim { color: var(--text3); } .btn.dim .ic { color: var(--text3); }
+  .btn.on { background: rgba(255,255,255,.08); }
+  .btn .acc { color: var(--accent); }
+  .sep { width: 1px; height: 20px; background: var(--stroke); margin: 0 6px; }
+  .grow { flex: 1; }
+  .faint { color: var(--text3); font-size: 12px; }
+  .body { display: grid; min-height: 0; }
+  .side { background: var(--side); padding: 4px 0; overflow: hidden; border-right: 1px solid var(--stroke); }
+  .sh { font-size: 12px; font-weight: 600; color: var(--text2); padding: 10px 12px 4px; display: flex; align-items: center; }
+  .nav { display: flex; align-items: center; gap: 12px; height: 30px; margin: 1px 4px; padding: 0 8px; border-radius: 4px; position: relative; }
+  .nav.cur { background: rgba(255,255,255,.07); }
+  .nav.cur::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 2px; background: var(--accent); }
+  .nav .ic { color: var(--text2); width: 16px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); margin-left: auto; }
+  .disk { padding: 3px 12px 6px 16px; font-size: 12px; }
+  .disk .row { display: flex; justify-content: space-between; } .disk .row span:last-child { color: var(--text3); }
+  .bar { height: 3px; border-radius: 2px; background: rgba(255,255,255,.12); margin-top: 5px; } .bar i { display: block; height: 100%; border-radius: 2px; background: var(--ok); }
+  .bar i.warn { background: #f2c94c; }
+  .panes { display: grid; min-width: 0; min-height: 0; }
+  .pane { background: var(--layer); display: grid; grid-template-rows: auto auto 1fr auto; min-width: 0; position: relative; overflow: hidden; }
+  .pane + .pane { border-left: 1px solid var(--stroke); }
+  .pane.active::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--accent); }
+  .pnav { display: flex; align-items: center; gap: 2px; padding: 8px; min-width: 0; }
+  .ib { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 4px; color: var(--text2); flex: none; }
+  .ib.dim { color: var(--text3); }
+  .ptitle { display: flex; align-items: center; gap: 8px; margin: 0 8px; font-weight: 600; white-space: nowrap; }
+  .ptitle .ic { color: var(--text2); font-weight: 400; }
+  .crumbs { flex: 1; min-width: 0; height: 32px; border-radius: 4px; background: var(--ctl); border: 1px solid rgba(255,255,255,.07); display: flex; align-items: center; padding: 0 8px; gap: 6px; white-space: nowrap; overflow: hidden; }
+  .crumbs .ch { font-size: 8px; color: var(--text3); }
+  .filter { width: 180px; height: 32px; margin-left: 8px; border-radius: 4px; background: var(--ctl); border: 1px solid rgba(255,255,255,.07); display: flex; align-items: center; gap: 8px; padding: 0 10px; color: var(--text3); font-size: 12px; flex: none; }
+  .cols { display: grid; height: 30px; align-items: center; background: var(--head); border-bottom: 1px solid var(--stroke); font-weight: 600; padding: 0 4px; }
+  .cols span { padding: 0 6px; border-right: 1px solid var(--stroke); }
+  .rows { overflow: hidden; }
+  .r { display: grid; height: 32px; align-items: center; padding: 0 4px; }
+  .r span { padding: 0 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+  .r span.m { font-size: 12px; color: var(--text2); }
+  .r span.mono { font: 12px "Cascadia Mono", Consolas, monospace; color: var(--text2); }
+  .r .ic { color: var(--folder); margin-right: 10px; vertical-align: -2px; }
+  .r .ic.file { color: var(--text2); }
+  .foot { height: 28px; display: flex; align-items: center; padding: 0 12px; font-size: 12px; color: var(--text3); border-top: 1px solid var(--stroke); }
+  .details { background: var(--layer); border-left: 1px solid var(--stroke); padding: 12px; }
+  .dcard { height: 72px; border-radius: 8px; background: var(--card); display: grid; place-items: center; }
+  .dcard .ic { font-size: 30px; color: var(--folder); }
+  .dname { font: 600 20px "Segoe UI Variable Display", "Segoe UI", sans-serif; margin: 16px 0 2px; }
+  .kv { display: grid; grid-template-columns: 88px 1fr; gap: 8px; font-size: 12px; margin-top: 16px; color: var(--text2); }
+  .kv b { font: 12px "Cascadia Mono", Consolas, monospace; color: var(--text); }
+  .status { display: flex; align-items: center; gap: 12px; padding: 0 12px; font-size: 12px; color: var(--text2); border-top: 1px solid var(--stroke); }
+  .status .dot { margin: 0; }
+  .status a { color: var(--accent); }
+
+  .rail { background: var(--side); border-right: 1px solid var(--stroke); display: flex; flex-direction: column; align-items: center; padding-top: 10px; gap: 10px; color: var(--text2); }
+  .rail .vt { writing-mode: vertical-rl; transform: rotate(180deg); font-weight: 600; color: var(--text); letter-spacing: .02em; }
+  .rail .open { width: 30px; height: 30px; border-radius: 4px; display: grid; place-items: center; background: rgba(255,255,255,.06); }
+  .chip { display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 10px; border-radius: 4px; background: rgba(255,255,255,.06); white-space: nowrap; flex: none; }
+  .chip .ic { color: var(--text2); }
+  .vbar { width: 1px; height: 20px; background: var(--stroke); margin: 0 6px; flex: none; }
+  .switch { margin-left: auto; width: 34px; height: 18px; border-radius: 9px; background: var(--accent); position: relative; }
+  .switch::after { content: ""; position: absolute; right: 3px; top: 3px; width: 12px; height: 12px; border-radius: 50%; background: #0a1a2e; }
+  .switch.off { background: transparent; border: 1px solid var(--text2); }
+  .switch.off::after { left: 3px; right: auto; top: 2px; background: var(--text2); }
+
+  .mark { outline: 2px dashed #ff5a5a; outline-offset: 2px; border-radius: 4px; position: relative; }
+  .tag { position: absolute; z-index: 5; background: #ff5a5a; color: white; font: 600 12px "Segoe UI", sans-serif; padding: 3px 8px; border-radius: 4px; white-space: nowrap; pointer-events: none; }
+  .gone { text-decoration: line-through; text-decoration-color: #ff5a5a; text-decoration-thickness: 2px; opacity: .55; }
+
+  .notes { max-width: 1440px; margin: 0 auto; padding: 0 48px 64px; font-size: 14px; line-height: 1.5; color: #444; }
+  .notes h2 { font-size: 16px; margin: 0 0 8px; }
+  .notes ul { margin: 0; padding-left: 20px; }
+</style>
+</head>
+<body>
+<header class="page">
+  <h1>Where the This PC switch lives</h1>
+  <p>The This PC pane opens on the left of the server, but the button that opens it sits at the far right of the command bar, next to Details. These three options move the control to where the pane appears. All three drop the This PC button from the command bar. Hidden files, Details and Ctrl+K stay where they are, and Details still sits right above the pane it controls.</p>
+</header>
+
+<main class="canvas" id="canvas"></main>
+
+<section class="notes">
+  <h2>Also in this change, whichever option is picked</h2>
+  <ul>
+    <li>Mouse buttons 4 and 5 go back and forward in the pane under the pointer, not the active one. This is already built.</li>
+  </ul>
+</section>
+
+<script>
+const LOCAL = [
+  ["background-remover-output","26 Jun"],["backup-2026-06-21_21-47.fuelio","21 Jun"],["backup-2026-06-27_12-03.fuelio","27 Jun"],
+  ["BCUninstaller_6.2.0_portable","28 Jul"],["Copy-Current-URL-Chrome-Extension-main","27 Jun"],["Flow-Launcher-Portable","9 Oct"],
+  ["Fluffy Mod Manager-14-3-020-1698963636","25 Apr"],["hwi_844","8 Mar"],["Mountain_Eaters","4 Jun"],["New folder","27 Jun"],
+  ["NZBFinder_20260728090835","28 Jul"],["OBD2 data receiver app-handoff (1)","26 Jun"],["openttd-15.3-source","5 Aug"],
+  ["platform-tools-latest-windows","30 May"],["PrinterGear_V1.70","29 Jun"],["ProcessMonitor","24 Apr"],
+  ["SavageWind-0.4.1-alpha.4-windows","Yesterday, 21:48"],["Saved","28 Aug"],["scrcpy-win64-v4.0","30 May"]];
+const REMOTE = [
+  ["Clive.Barkers.Hellraiser.Revival-RUNE","11 Oct","","drwxrwxrwx"],["House_Party_v1.5.2.14040-DINOByTES","30 Oct","","drwxrwxrwx"],
+  ["Incomplete","Yesterday, 22:08","","drwxrwxrwx"],["OpenVPN PIA","27 May 2024","","drwxrwxrwx"],["sabnzbd_backups","Today, 02:00","","drwxrwxrwx"],
+  ["The.Legend.of.Zelda.Breath.of.the.Wild","Yesterday, 21:52","","drwxrwxrwx"],["The.Legend.of.Zelda.Breath.of.the.Wild.Update","Yesterday, 21:57","","drwxrwxrwx"],
+  ["Settings.jd2backup","23 Mar 2025","1,6 MB","-rw-rw-rw-",true]];
+const I = { back:"", fwd:"", up:"", pc:"", folder:"", file:"", close:"", left:"", right:"",
+  filter:"", search:"", eye:"", info:"", newf:"", down:"", rename:"", lock:"", del:"",
+  refresh:"", home:"", add:"", server:"", sync:"", gear:"", desktop:"", drive:"", dl:"" };
+const ic = (g, cls = "") => `<span class="ic ${cls}">${g}</span>`;
+
+function cmd(o) {
+  const pcBtn = o.legacy ? `<span class="btn on ${o.markLegacy ? "mark" : ""}">${ic(I.pc)}This PC</span>`
+    : o.strike ? `<span class="btn gone">${ic(I.pc)}This PC</span>` : "";
+  return `<div class="cmd">
+    <span class="btn">${ic(I.newf, "acc")}New folder</span><span class="sep"></span>
+    <span class="btn dim">${ic(I.down)}Download</span><span class="btn dim">${ic(I.rename)}Rename</span>
+    <span class="btn dim">${ic(I.lock)}Permissions</span><span class="btn dim">${ic(I.del)}Delete</span><span class="btn">${ic(I.refresh)}Refresh</span>
+    <span class="grow"></span><span class="faint" style="margin:0 8px">8 items</span><span class="sep"></span>
+    <span class="btn">${ic(I.eye)}Hidden files</span>${pcBtn}<span class="btn on">${ic(I.info)}Details</span>
+    <span class="btn">${ic(I.search)}<span class="faint">Ctrl+K</span></span></div>`;
+}
+
+function sidebar(o) {
+  const places = [["Home",I.home],["Root (/)",I.folder],["Shares",I.server],["appdata",I.folder],["backups",I.folder],["data",I.folder],["domains",I.folder],["downloads",I.folder,true],["isos",I.folder],["media",I.folder]];
+  const disks = [["Shares (/mnt/user)","2,5 TB free",78,1],["/boot","25,8 GB free",12],["/mnt/disk1","724,0 GB free",64],["/mnt/disk2","767,8 GB free",62]];
+  const pcHead = o.sideToggle
+    ? `<div class="sh mark" style="margin:6px 4px 0;padding-right:8px">This PC<span class="switch ${o.local ? "" : "off"}"></span></div>`
+    : `<div class="sh">This PC</div>`;
+  const pcItems = [["Desktop",I.desktop],["Downloads",I.dl,o.local && o.sideToggle],["Documents",I.folder],["Local Disk (C:)",I.drive]];
+  return `<aside class="side">
+    <div class="sh">192.168.2.3</div>
+    ${places.map(([l,g,c]) => `<div class="nav ${c ? "cur" : ""}">${ic(g)}${l}</div>`).join("")}
+    <div class="sh">Storage</div>
+    ${disks.map(([l,m,p,w]) => `<div class="disk"><div class="row"><span>${l}</span><span>${m}</span></div><div class="bar"><i class="${w ? "warn" : ""}" style="width:${p}%"></i></div></div>`).join("")}
+    <div class="sh">Servers</div>
+    <div class="nav cur">${ic(I.server)}192.168.2.3<span class="dot"></span></div>
+    ${pcHead}
+    ${pcItems.map(([l,g,c]) => `<div class="nav ${c ? "cur" : ""}">${ic(g)}${l}</div>`).join("")}
+  </aside>`;
+}
+
+function pane(o) {
+  const local = o.kind === "local";
+  const cols = local ? "1fr 150px 90px" : "1fr 150px 90px 120px";
+  const head = local ? ["Name","Modified","Size"] : ["Name","Modified","Size","Permissions"];
+  const rows = (local ? LOCAL : REMOTE).map(r => `<div class="r" style="grid-template-columns:${cols}">
+      <span>${ic(r[4] ? I.file : I.folder, r[4] ? "file" : "")}${r[0]}</span><span class="m">${r[1]}</span><span class="m" style="text-align:right">${r[2] || ""}</span>${local ? "" : `<span class="mono">${r[3]}</span>`}</div>`).join("");
+  const crumbs = local ? `… <span class="ch ic">${I.right}</span> Users <span class="ch ic">${I.right}</span> Oss <span class="ch ic">${I.right}</span> Downloads`
+    : `/ <span class="ch ic">${I.right}</span> mnt <span class="ch ic">${I.right}</span> user <span class="ch ic">${I.right}</span> downloads`;
+  return `<section class="pane ${o.active ? "active" : ""}">
+    <div class="pnav">${o.lead || ""}
+      <span class="ib">${ic(I.back)}</span><span class="ib dim">${ic(I.fwd)}</span><span class="ib">${ic(I.up)}</span>
+      <span class="ptitle">${ic(local ? I.pc : I.server)}${local ? "This PC" : "192.168.2.3"}</span>
+      <div class="crumbs">${crumbs}</div>
+      <div class="filter">${ic(I.filter)}Filter ${local ? "Downloads" : "downloads"}</div>${o.trail || ""}
+    </div>
+    <div class="cols" style="grid-template-columns:${cols}">${head.map(h => `<span>${h}</span>`).join("")}</div>
+    <div class="rows">${rows}</div>
+    <div class="foot">${local ? "230 items" : "8 items"}</div>
+  </section>`;
+}
+
+const details = `<aside class="details"><div class="dcard">${ic(I.folder)}</div><div class="dname">downloads</div><div class="faint">8 items</div>
+  <div class="kv"><span>Location</span><b>/mnt/user/downloads</b><span>Owner</span><span>root</span></div></aside>`;
+const status = `<div class="status"><span class="dot"></span>Connected to 192.168.2.3 as root<span class="faint">192.168.2.3 · 4 ms</span><a>Disconnect</a><span class="grow"></span>${ic(I.sync)} Transfers ${ic(I.gear)} Settings</div>`;
+
+function frame(o) {
+  let panes, cols;
+  if (o.rail && !o.local) {
+    panes = `<div class="rail mark"><span class="open">${ic(I.right)}</span>${ic(I.pc)}<span class="vt">This PC</span></div>` + pane({ kind: "remote", active: true });
+    cols = "44px 1fr";
+  } else if (o.local) {
+    panes = pane({ kind: "local", active: false, lead: o.localLead, trail: o.localTrail }) + pane({ kind: "remote", active: true });
+    cols = "1fr 1fr";
+  } else {
+    panes = pane({ kind: "remote", active: true, lead: o.remoteLead });
+    cols = "1fr";
+  }
+  const showDetails = !o.local;
+  return `<div class="app">
+    <div class="title"><span class="ic" style="color:#4cc2ff">${I.pc}</span>Portal — 192.168.2.3</div>
+    ${cmd(o)}
+    <div class="body" style="grid-template-columns:232px 1fr ${showDetails ? "296px" : ""}">
+      ${sidebar(o)}<div class="panes" style="grid-template-columns:${cols}">${panes}</div>${showDetails ? details : ""}
+    </div>${status}
+    ${o.tags || ""}
+  </div>`;
+}
+
+const tag = (text, x, y) => `<div class="tag" style="left:${x}px;top:${y}px">${text}</div>`;
+const markIb = (g, title) => `<span class="ib mark" title="${title}">${ic(g)}</span>`;
+
+const VARIANTS = [
+  { key: "A", name: "A · Pane-edge button", impact: "Within the system", impactCls: "",
+    text: "The command bar loses its This PC button. While the pane is closed, the server pane starts with a This PC button at its left edge, right where the pane will open. While it's open, a close button at the right end of the This PC pane, beside the splitter, hides it again. It uses the existing CommandButton and IconButton styles and adds no new parts.",
+    closed: { strike: true, remoteLead: `<span class="chip mark">${ic(I.pc)}This PC</span><span class="vbar"></span>`,
+      tags: tag("Opens This PC here, on the left", 236, 108) },
+    open: { strike: true, localTrail: `<span class="vbar"></span>${markIb(I.close, "Hide This PC")}`,
+      tags: tag("Hide This PC", 500, 108) } },
+  { key: "B", name: "B · Sidebar switch", impact: "Rule change: This PC places in the sidebar open the This PC pane", impactCls: "rule",
+    text: "This PC becomes a section of the sidebar with an on/off switch in its header. Clicking any This PC place, such as Downloads, opens the pane at that folder. The open pane also gets the close button from A. The command bar loses its This PC button. The sidebar already lists This PC places, so the control sits with the things it shows.",
+    closed: { strike: true, sideToggle: true, tags: tag("Switch, or click a place to open it", 12, 590) },
+    open: { strike: true, sideToggle: true, local: true, localTrail: `<span class="vbar"></span>${markIb(I.close, "Hide This PC")}`,
+      tags: tag("Downloads opened in the This PC pane", 12, 590) } },
+  { key: "C", name: "C · Collapsed rail (recommended)", impact: "New component variant: PaneRail", impactCls: "variant",
+    text: "While the pane is closed, a 44 px rail stays at the left edge of the file area, with the This PC icon and its name. Click the rail to open the pane. Drag files from the server over it and it opens, so you can drop them straight into a folder. While the pane is open, a ‹ button at the far left of its header folds it back into the rail. The control is always visible and always where the pane appears. The cost is 44 px of width.",
+    closed: { strike: true, rail: true, tags: tag("Click, or drag files onto it", 282, 108) },
+    open: { strike: true, local: true, localLead: `${markIb(I.left, "Fold This PC")}<span class="vbar"></span>`,
+      tags: tag("Folds back into the rail", 236, 108) } },
+];
+
+const canvas = document.getElementById("canvas");
+const cell = (title, desc, impact, impactCls, inner, one) => `<section class="cell">
+  <header class="cell-label"><h3>${title}</h3><p>${desc}</p>${impact ? `<span class="impact ${impactCls}">${impact}</span>` : ""}</header>
+  <div class="pair ${one ? "one" : ""}">${inner}</div></section>`;
+const fit = (label, html) => `<div><p class="state">${label}</p><div class="fit"><div class="holder"><div class="scale">${html}</div></div></div></div>`;
+
+canvas.innerHTML = cell("Now", "The This PC button, framed in red, sits at the top right next to Details. The pane it opens appears at the far left of the file area.", "", "",
+  `<div><p class="state">Your screenshot, This PC open</p><img class="shot" src="2026-11-05-this-pc-toggle-current.png" alt="Portal now: This PC toggle at the top right of the command bar"></div>`, true)
+  + VARIANTS.map(v => cell(v.name, v.text, v.impact, v.impactCls,
+      fit("This PC closed", frame(v.closed)) + fit("This PC open", frame({ ...v.open, local: true })))).join("");
+
+function rescale() {
+  document.querySelectorAll(".fit").forEach(f => {
+    const s = f.clientWidth / 1333;
+    const holder = f.querySelector(".holder"), inner = f.querySelector(".scale");
+    inner.style.transform = `scale(${s})`;
+    holder.style.height = `${778 * s}px`;
+  });
+}
+addEventListener("resize", rescale);
+rescale();
+</script>
+</body>
+</html>

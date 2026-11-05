@@ -1,0 +1,419 @@
+<UserControl x:Class="Portal.Views.BrowserView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:Portal.ViewModels"
+             xmlns:views="clr-namespace:Portal.Views"
+             xmlns:tr="clr-namespace:Portal.Core.Transfers;assembly=Portal.Core"
+             x:Name="Root">
+    <UserControl.InputBindings>
+        <KeyBinding Gesture="Ctrl+K" Command="{Binding OpenPaletteCommand}" />
+        <KeyBinding Gesture="Ctrl+H" Command="{Binding ToggleHiddenCommand}" />
+        <KeyBinding Gesture="Ctrl+Shift+N" Command="{Binding NewFolderCommand}" />
+        <KeyBinding Gesture="F5" Command="{Binding RefreshCommand}" />
+        <KeyBinding Gesture="Ctrl+OemComma" Command="{Binding OpenSettingsCommand}" />
+        <KeyBinding Gesture="Ctrl+L" Command="{Binding ActivePane.BeginEditPathCommand}" />
+    </UserControl.InputBindings>
+    <UserControl.Resources>
+        <DataTemplate x:Key="NavItem" DataType="{x:Type vm:SidebarItem}">
+            <Button x:Name="Btn" Style="{StaticResource NavButton}" Command="{Binding DataContext.OpenPlaceCommand, ElementName=Root}" CommandParameter="{Binding}"
+                    ToolTip="{Binding Path}" AutomationProperties.Name="{Binding Label}">
+                <Button.ContextMenu>
+                    <ContextMenu Visibility="{Binding IsPin, Converter={StaticResource Visible}}">
+                        <MenuItem Header="Unpin from sidebar" Command="{Binding PlacementTarget.Tag.UnpinCommand, RelativeSource={RelativeSource AncestorType=ContextMenu}}" CommandParameter="{Binding}" />
+                    </ContextMenu>
+                </Button.ContextMenu>
+                <Button.Tag>
+                    <Binding Path="DataContext" ElementName="Root" />
+                </Button.Tag>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="28" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Border x:Name="Marker" Width="3" Height="16" CornerRadius="2" HorizontalAlignment="Left" Margin="-12,0,0,0" Background="{DynamicResource AccentFillColorDefaultBrush}" Visibility="Collapsed" />
+                    <TextBlock Style="{StaticResource Icon}" Text="{Binding Glyph}" HorizontalAlignment="Left" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                    <TextBlock Grid.Column="1" Text="{Binding Label}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                    <Ellipse x:Name="Dot" Grid.Column="2" Width="8" Height="8" Fill="{DynamicResource SystemFillColorSuccessBrush}" Visibility="Collapsed" Margin="8,0,0,0" />
+                </Grid>
+            </Button>
+            <DataTemplate.Triggers>
+                <DataTrigger Binding="{Binding IsCurrent}" Value="True">
+                    <Setter TargetName="Marker" Property="Visibility" Value="Visible" />
+                    <Setter TargetName="Btn" Property="Background" Value="{DynamicResource SubtleFillColorSecondaryBrush}" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding IsConnected}" Value="True">
+                    <Setter TargetName="Dot" Property="Visibility" Value="Visible" />
+                </DataTrigger>
+            </DataTemplate.Triggers>
+        </DataTemplate>
+    </UserControl.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Border BorderThickness="0,0,0,1" BorderBrush="{DynamicResource DividerStrokeColorDefaultBrush}" Padding="8,6">
+            <DockPanel>
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
+                    <TextBlock Text="{Binding SelectionText}" Style="{StaticResource Faint}" VerticalAlignment="Center" Margin="8,0" MaxWidth="260" />
+                    <Rectangle Style="{StaticResource Divider}" />
+                    <ToggleButton Style="{StaticResource CommandButton}" IsChecked="{Binding ShowHidden}" ToolTip="Show hidden files (Ctrl+H)">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Icon}" Text="&#xE890;" Margin="0,0,8,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="Hidden files" />
+                        </StackPanel>
+                    </ToggleButton>
+                    <ToggleButton Style="{StaticResource CommandButton}" IsChecked="{Binding ShowDetails}" ToolTip="Show the details pane">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Icon}" Text="&#xE946;" Margin="0,0,8,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="Details" />
+                        </StackPanel>
+                    </ToggleButton>
+                    <Button Style="{StaticResource CommandButton}" Command="{Binding OpenPaletteCommand}" ToolTip="Search commands and files (Ctrl+K)" AutomationProperties.Name="Search">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Icon}" Text="&#xE721;" Margin="0,0,8,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="Ctrl+K" Style="{StaticResource Faint}" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal">
+                    <Button Style="{StaticResource CommandButton}" Command="{Binding NewFolderCommand}" ToolTip="New folder (Ctrl+Shift+N)">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Icon}" Text="&#xE8F4;" Margin="0,0,8,0" Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}" />
+                            <TextBlock Text="New folder" />
+                        </StackPanel>
+                    </Button>
+                    <Rectangle Style="{StaticResource Divider}" />
+                    <Button Style="{StaticResource CommandButton}" Command="{Binding TransferCommand}" ToolTip="Ctrl+Enter">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Icon}" Text="{Binding TransferGlyph}" Margin="0,0,8,0" Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}" />
+                            <TextBlock Text="{Binding TransferText}" />
+                        </StackPanel>
+                    </Button>
+                    <Button Style="{StaticResource CommandButton}" Command="{Binding RenameCommand}" ToolTip="Rename (F2)">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Icon}" Text="&#xE8AC;" Margin="0,0,8,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="Rename" />
+                        </StackPanel>
+                    </Button>
+                    <Button Style="{StaticResource CommandButton}" Command="{Binding EditPermissionsCommand}" ToolTip="Permissions and owner"
+                            Visibility="{Binding ActivePane.IsRemote, Converter={StaticResource Visible}}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Icon}" Text="&#xE72E;" Margin="0,0,8,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="Permissions" />
+                        </StackPanel>
+                    </Button>
+                    <Button Style="{StaticResource CommandButton}" Command="{Binding DeleteCommand}" ToolTip="Delete (Del)">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Icon}" Text="&#xE74D;" Margin="0,0,8,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="Delete" />
+                        </StackPanel>
+                    </Button>
+                    <Button Style="{StaticResource CommandButton}" Command="{Binding RefreshCommand}" ToolTip="Refresh (F5)">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Icon}" Text="&#xE72C;" Margin="0,0,8,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="Refresh" />
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <Border Grid.Row="1" Padding="16,10" Background="{DynamicResource SystemFillColorCautionBackgroundBrush}" BorderThickness="0,0,0,1" BorderBrush="{DynamicResource DividerStrokeColorDefaultBrush}"
+                Visibility="{Binding IsConnectionLost, Converter={StaticResource Visible}}">
+            <DockPanel>
+                <Button DockPanel.Dock="Right" Content="Reconnect" Command="{Binding ReconnectCommand}" Style="{DynamicResource AccentButtonStyle}" />
+                <TextBlock Style="{StaticResource Icon}" Text="&#xE7BA;" Foreground="{DynamicResource SystemFillColorCautionBrush}" Margin="0,0,12,0" />
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock Text="{Binding ConnectionText}" FontWeight="SemiBold" />
+                    <TextBlock Text="Browsing and transfers continue after reconnecting." Style="{StaticResource Caption}" />
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <Grid Grid.Row="2" x:Name="Body">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="232" MinWidth="180" MaxWidth="360" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition x:Name="DetailsColumn" Width="296" />
+            </Grid.ColumnDefinitions>
+
+            <Border Background="{DynamicResource LayerFillColorAltBrush}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="0,4,0,8">
+                    <StackPanel>
+                        <TextBlock Text="{Binding ServerName}" Style="{StaticResource SectionHeader}" Margin="12,4,12,4" />
+                        <ItemsControl ItemsSource="{Binding Places}" ItemTemplate="{StaticResource NavItem}" Focusable="False" />
+                        <TextBlock Text="{Binding StorageHeader}" Style="{StaticResource SectionHeader}" Visibility="{Binding Disks, Converter={StaticResource VisibleIfSet}}" />
+                        <ItemsControl ItemsSource="{Binding Disks}" Focusable="False">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate DataType="{x:Type vm:SidebarItem}">
+                                    <StackPanel Margin="16,4,12,6" ToolTip="{Binding UsedPercent, StringFormat={}{0:0} % used}">
+                                        <DockPanel>
+                                            <TextBlock DockPanel.Dock="Right" Text="{Binding Meta}" Style="{StaticResource Faint}" Margin="8,0,0,0" />
+                                            <TextBlock Text="{Binding Label}" FontSize="12" TextTrimming="CharacterEllipsis" />
+                                        </DockPanel>
+                                        <ProgressBar x:Name="Bar" Style="{StaticResource ProgressThin}" Value="{Binding UsedPercent, Mode=OneWay}" Margin="0,6,0,0" />
+                                    </StackPanel>
+                                    <DataTemplate.Triggers>
+                                        <DataTrigger Binding="{Binding IsNearlyFull}" Value="True">
+                                            <Setter TargetName="Bar" Property="Foreground" Value="{DynamicResource SystemFillColorCautionBrush}" />
+                                        </DataTrigger>
+                                    </DataTemplate.Triggers>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <TextBlock Text="Servers" Style="{StaticResource SectionHeader}" />
+                        <ItemsControl ItemsSource="{Binding Servers}" ItemTemplate="{StaticResource NavItem}" Focusable="False" />
+                        <Button Style="{StaticResource NavButton}" Click="OnAddServer">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Style="{StaticResource Icon}" Text="&#xE710;" Width="28" HorizontalAlignment="Left" TextAlignment="Left" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                                <TextBlock Text="Add server" VerticalAlignment="Center" />
+                            </StackPanel>
+                        </Button>
+                        <TextBlock Text="This PC" Style="{StaticResource SectionHeader}" />
+                        <ItemsControl ItemsSource="{Binding LocalPlaces}" ItemTemplate="{StaticResource NavItem}" Focusable="False" />
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+            <GridSplitter Grid.Column="1" Width="1" ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" Background="{DynamicResource DividerStrokeColorDefaultBrush}" Focusable="False" />
+
+            <Grid Grid.Column="2" x:Name="Panes">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition x:Name="LocalColumn" Width="*" />
+                    <ColumnDefinition x:Name="SplitColumn" Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <views:FileListView x:Name="LocalList" DataContext="{Binding Local}" />
+                <Button x:Name="LocalRail" Style="{StaticResource PaneRail}" Command="{Binding ToggleLocalPaneCommand}" AllowDrop="True" DragEnter="OnRailDragEnter"
+                        ToolTip="Show This PC next to the server" AutomationProperties.Name="Show This PC">
+                    <StackPanel>
+                        <Border Width="28" Height="28" CornerRadius="4" Background="{DynamicResource SubtleFillColorSecondaryBrush}">
+                            <TextBlock Style="{StaticResource Icon}" Text="&#xE89F;" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <TextBlock Style="{StaticResource Icon}" Text="{Binding Local.TitleGlyph}" HorizontalAlignment="Center" Margin="0,12,0,10" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                        <TextBlock Text="This PC" FontWeight="SemiBold" HorizontalAlignment="Center">
+                            <TextBlock.LayoutTransform>
+                                <RotateTransform Angle="-90" />
+                            </TextBlock.LayoutTransform>
+                        </TextBlock>
+                    </StackPanel>
+                </Button>
+                <GridSplitter x:Name="PaneSplitter" Grid.Column="1" Width="1" ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" Background="{DynamicResource DividerStrokeColorDefaultBrush}" Focusable="False" />
+                <views:FileListView x:Name="RemoteList" Grid.Column="2" DataContext="{Binding Remote}" />
+            </Grid>
+
+            <Border Grid.Column="3" x:Name="DetailsPane" BorderThickness="1,0,0,0" BorderBrush="{DynamicResource DividerStrokeColorDefaultBrush}" Background="{DynamicResource LayerFillColorDefaultBrush}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" DataContext="{Binding Details}">
+                    <StackPanel Margin="16">
+                        <Border Style="{StaticResource Card}" Height="96" Margin="0,0,0,12">
+                            <TextBlock Text="{Binding Glyph}" FontSize="40">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock" BasedOn="{StaticResource Icon}">
+                                        <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsFolderGlyph}" Value="True">
+                                                <Setter Property="Foreground" Value="{StaticResource FolderBrush}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </Border>
+                        <TextBlock Text="{Binding Title}" Style="{StaticResource Subtitle}" TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding Subtitle}" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,2,0,16" />
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="88" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <TextBlock Text="Location" Style="{StaticResource Faint}" Margin="0,0,0,8" />
+                            <TextBox Grid.Column="1" Text="{Binding Location, Mode=OneWay}" IsReadOnly="True" BorderThickness="0" Background="Transparent" Padding="0" FontFamily="{StaticResource MonoFont}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8" />
+                            <TextBlock Grid.Row="1" Text="Modified" Style="{StaticResource Faint}" Margin="0,0,0,8" Visibility="{Binding Modified, Converter={StaticResource VisibleIfSet}}" />
+                            <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding Modified}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8" Visibility="{Binding Modified, Converter={StaticResource VisibleIfSet}}" />
+                            <TextBlock Grid.Row="2" Text="Size" Style="{StaticResource Faint}" Margin="0,0,0,8" Visibility="{Binding Entry, Converter={StaticResource VisibleIfSet}}" />
+                            <StackPanel Grid.Row="2" Grid.Column="1" Margin="0,0,0,8" Visibility="{Binding Entry, Converter={StaticResource VisibleIfSet}}">
+                                <TextBlock Text="{Binding Size}" FontSize="12" TextWrapping="Wrap" Visibility="{Binding Size, Converter={StaticResource VisibleIfSet}}" />
+                                <TextBlock Text="Measuring on the server…" Style="{StaticResource Faint}" Visibility="{Binding IsMeasuring, Converter={StaticResource Visible}}" />
+                                <Button Content="Calculate size" Command="{Binding DataContext.MeasureSizeCommand, ElementName=Root}" HorizontalAlignment="Left" FontSize="12" Padding="10,2"
+                                        Visibility="{Binding CanMeasure, Converter={StaticResource Visible}}" />
+                            </StackPanel>
+                            <TextBlock Grid.Row="3" Text="Owner" Style="{StaticResource Faint}" Margin="0,0,0,8" Visibility="{Binding Ownership, Converter={StaticResource VisibleIfSet}}" />
+                            <TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding Ownership}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8" Visibility="{Binding Ownership, Converter={StaticResource VisibleIfSet}}" />
+                            <TextBlock Grid.Row="4" Text="Permissions" Style="{StaticResource Faint}" Visibility="{Binding PermissionCode, Converter={StaticResource VisibleIfSet}}" />
+                            <StackPanel Grid.Row="4" Grid.Column="1" Visibility="{Binding PermissionCode, Converter={StaticResource VisibleIfSet}}">
+                                <TextBlock Text="{Binding PermissionCode}" Style="{StaticResource Mono}" Foreground="{DynamicResource TextFillColorPrimaryBrush}" />
+                                <ItemsControl ItemsSource="{Binding PermissionLines}" Margin="0,4,0,0" Focusable="False">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding}" Style="{StaticResource Faint}" TextWrapping="Wrap" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Grid>
+                        <WrapPanel Margin="0,16,0,0" Visibility="{Binding HasSelection, Converter={StaticResource Visible}}">
+                            <Button Command="{Binding DataContext.TransferCommand, ElementName=Root}" Style="{DynamicResource AccentButtonStyle}" Margin="0,0,8,8">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Style="{StaticResource Icon}" Text="{Binding TransferGlyph}" FontSize="14" Margin="0,0,8,0" Foreground="{DynamicResource TextOnAccentFillColorPrimaryBrush}" />
+                                    <TextBlock Text="{Binding TransferText}" />
+                                </StackPanel>
+                            </Button>
+                            <Button Content="Rename" Command="{Binding DataContext.RenameCommand, ElementName=Root}" Margin="0,0,8,8" />
+                            <Button Content="Permissions" Command="{Binding DataContext.EditPermissionsCommand, ElementName=Root}" Margin="0,0,8,8" Visibility="{Binding IsRemote, Converter={StaticResource Visible}}" />
+                            <Button Content="Delete" Command="{Binding DataContext.DeleteCommand, ElementName=Root}" Margin="0,0,8,8" />
+                        </WrapPanel>
+                        <StackPanel Visibility="{Binding CanEditOnServer, Converter={StaticResource Visible}}">
+                            <Rectangle Height="1" Fill="{DynamicResource DividerStrokeColorDefaultBrush}" Margin="0,8,0,16" />
+                            <TextBlock Text="Edit on the server" FontWeight="SemiBold" FontSize="12" Margin="0,0,0,4" />
+                            <TextBlock Text="Opens a copy in its usual app. Every time you save, Portal uploads it back." Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,0,0,8" />
+                            <Button Command="{Binding DataContext.EditOnServerCommand, ElementName=Root}" HorizontalAlignment="Left">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Style="{StaticResource Icon}" Text="&#xE8E5;" FontSize="14" Margin="0,0,8,0" />
+                                    <TextBlock Text="Open" />
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
+                        <TextBlock Text="{Binding Hint}" Style="{StaticResource Caption}" TextWrapping="Wrap" Margin="0,8,0,0" Visibility="{Binding Hint, Converter={StaticResource VisibleIfSet}}" />
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+        </Grid>
+
+        <Border Grid.Row="3" BorderThickness="0,1,0,0" BorderBrush="{DynamicResource DividerStrokeColorDefaultBrush}" Padding="12,0" Height="32">
+            <DockPanel>
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
+                    <Button Style="{StaticResource SubtleButton}" MinHeight="24" Padding="8,0" Command="{Binding Main.Updates.OpenChipCommand}" Margin="0,0,4,0"
+                            Visibility="{Binding Main.Updates.ShowChip, Converter={StaticResource Visible}}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Icon}" Text="&#xE896;" FontSize="12" Margin="0,0,6,0" Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}" />
+                            <TextBlock Text="{Binding Main.Updates.ChipText}" FontSize="12" Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}" />
+                        </StackPanel>
+                    </Button>
+                    <Button x:Name="TransfersButton" Style="{StaticResource SubtleButton}" MinHeight="24" Padding="8,0" Command="{Binding Main.Transfers.ToggleCommand}" AutomationProperties.Name="Transfers">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock x:Name="TransferIcon" Style="{StaticResource Icon}" Text="&#xE895;" FontSize="12" Margin="0,0,6,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="{Binding Main.Transfers.Summary}" FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            <ProgressBar Style="{StaticResource ProgressThin}" Width="72" Margin="8,0,0,0" Value="{Binding Main.Transfers.OverallPercent, Mode=OneWay}"
+                                         Visibility="{Binding Main.Transfers.ActiveCount, Converter={x:Static views:CountToVisibility.Instance}}" />
+                        </StackPanel>
+                    </Button>
+                    <Button Style="{StaticResource SubtleButton}" MinHeight="24" Padding="8,0" Command="{Binding OpenSettingsCommand}" Margin="4,0,0,0">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Icon}" Text="&#xE713;" FontSize="12" Margin="0,0,6,0" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                            <TextBlock Text="Settings" FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <Ellipse Width="8" Height="8" Margin="0,0,8,0">
+                        <Ellipse.Style>
+                            <Style TargetType="Ellipse">
+                                <Setter Property="Fill" Value="{DynamicResource SystemFillColorSuccessBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsConnectionLost}" Value="True">
+                                        <Setter Property="Fill" Value="{DynamicResource SystemFillColorCriticalBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </Ellipse.Style>
+                    </Ellipse>
+                    <TextBlock Text="{Binding ConnectionText}" FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
+                    <TextBlock Text="{Binding ConnectionDetail}" Style="{StaticResource Faint}" Margin="12,0,0,0" />
+                    <Button Content="Disconnect" Command="{Binding DisconnectCommand}" Style="{StaticResource LinkButton}" FontSize="12" Margin="12,0,0,0" VerticalAlignment="Center" />
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <Border Grid.Row="0" Grid.RowSpan="4" Width="540" MaxHeight="440" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,8,36" CornerRadius="8"
+                Background="{DynamicResource SolidBackgroundFillColorSecondaryBrush}" BorderBrush="{DynamicResource SurfaceStrokeColorDefaultBrush}" BorderThickness="1"
+                DataContext="{Binding Main.Transfers}" Visibility="{Binding IsOpen, Converter={StaticResource Visible}}">
+            <Border.Effect>
+                <DropShadowEffect BlurRadius="32" ShadowDepth="8" Opacity="0.3" />
+            </Border.Effect>
+            <DockPanel>
+                <DockPanel DockPanel.Dock="Top" Margin="16,8,8,8">
+                    <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
+                        <Button Content="Pause all" Command="{Binding PauseAllCommand}" Style="{StaticResource SubtleButton}" FontSize="12" Visibility="{Binding ActiveCount, Converter={x:Static views:CountToVisibility.Instance}}" />
+                        <Button Content="Clear finished" Command="{Binding ClearFinishedCommand}" Style="{StaticResource SubtleButton}" FontSize="12" Visibility="{Binding HasFinished, Converter={StaticResource Visible}}" />
+                        <Button Style="{StaticResource IconButton}" Command="{Binding ToggleCommand}" ToolTip="Close (Esc)" AutomationProperties.Name="Close transfers">
+                            <TextBlock Style="{StaticResource Icon}" Text="&#xE711;" FontSize="12" />
+                        </Button>
+                    </StackPanel>
+                    <TextBlock Text="Transfers" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    <TextBlock Text="{Binding PanelSummary}" Style="{StaticResource Faint}" VerticalAlignment="Center" Margin="12,0,0,0" />
+                </DockPanel>
+                <Grid>
+                    <StackPanel Margin="24,16,24,32" Visibility="{Binding IsEmpty, Converter={StaticResource Visible}}">
+                        <TextBlock Text="No transfers yet" FontWeight="SemiBold" HorizontalAlignment="Center" />
+                        <TextBlock Text="Drag files between This PC and the server, or use Upload and Download." Style="{StaticResource Caption}" TextWrapping="Wrap" TextAlignment="Center" Margin="0,4,0,0" />
+                    </StackPanel>
+                    <ListBox ItemsSource="{Binding Items}" BorderThickness="0" Background="Transparent" Margin="4,0,4,8" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             VirtualizingPanel.ScrollUnit="Pixel" HorizontalContentAlignment="Stretch">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate DataType="{x:Type vm:TransferItemViewModel}">
+                                <Grid Margin="4,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="28" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock x:Name="Arrow" Style="{StaticResource Icon}" Text="{Binding Glyph}" VerticalAlignment="Top" HorizontalAlignment="Left" Margin="0,2,0,0" Foreground="{DynamicResource AccentTextFillColorPrimaryBrush}" />
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock Text="{Binding Route}" Style="{StaticResource Faint}" ToolTip="{Binding Route}" />
+                                        <ProgressBar x:Name="Bar" Style="{StaticResource ProgressThin}" Value="{Binding Percent, Mode=OneWay}" Margin="0,6,0,4" />
+                                        <DockPanel>
+                                            <TextBlock DockPanel.Dock="Right" Text="{Binding AmountText}" Style="{StaticResource Faint}" Margin="8,0,0,0" />
+                                            <TextBlock x:Name="Status" Text="{Binding StatusText}" FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" ToolTip="{Binding StatusText}" />
+                                        </DockPanel>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Top" Margin="8,0,0,0">
+                                        <Button Style="{StaticResource IconButton}" Width="28" Height="28" Command="{Binding PauseCommand}" ToolTip="Pause" AutomationProperties.Name="Pause" Visibility="{Binding CanPause, Converter={StaticResource Visible}}">
+                                            <TextBlock Style="{StaticResource Icon}" Text="&#xE769;" FontSize="12" />
+                                        </Button>
+                                        <Button Style="{StaticResource IconButton}" Width="28" Height="28" Command="{Binding ResumeCommand}" ToolTip="Resume" AutomationProperties.Name="Resume" Visibility="{Binding CanResume, Converter={StaticResource Visible}}">
+                                            <TextBlock Style="{StaticResource Icon}" Text="&#xE768;" FontSize="12" />
+                                        </Button>
+                                        <Button Content="Retry" Command="{Binding RetryCommand}" FontSize="12" Padding="10,2" Margin="0,0,4,0" Visibility="{Binding CanRetry, Converter={StaticResource Visible}}" />
+                                        <Button Style="{StaticResource IconButton}" Width="28" Height="28" Command="{Binding ShowCommand}" ToolTip="Open folder" AutomationProperties.Name="Open folder" Visibility="{Binding CanShow, Converter={StaticResource Visible}}">
+                                            <TextBlock Style="{StaticResource Icon}" Text="&#xE838;" FontSize="12" />
+                                        </Button>
+                                        <Button Style="{StaticResource IconButton}" Width="28" Height="28" Command="{Binding CancelCommand}" ToolTip="Cancel" AutomationProperties.Name="Cancel" Visibility="{Binding CanCancel, Converter={StaticResource Visible}}">
+                                            <TextBlock Style="{StaticResource Icon}" Text="&#xE711;" FontSize="12" />
+                                        </Button>
+                                    </StackPanel>
+                                </Grid>
+                                <DataTemplate.Triggers>
+                                    <DataTrigger Binding="{Binding Status}" Value="{x:Static tr:TransferStatus.Done}">
+                                        <Setter TargetName="Bar" Property="Foreground" Value="{DynamicResource SystemFillColorSuccessBrush}" />
+                                        <Setter TargetName="Status" Property="Foreground" Value="{DynamicResource SystemFillColorSuccessBrush}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Status}" Value="{x:Static tr:TransferStatus.Failed}">
+                                        <Setter TargetName="Bar" Property="Foreground" Value="{DynamicResource SystemFillColorCriticalBrush}" />
+                                        <Setter TargetName="Status" Property="Foreground" Value="{DynamicResource SystemFillColorCriticalBrush}" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding IsUpload}" Value="False">
+                                        <Setter TargetName="Arrow" Property="Foreground" Value="{DynamicResource SystemFillColorSuccessBrush}" />
+                                    </DataTrigger>
+                                </DataTemplate.Triggers>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </Grid>
+            </DockPanel>
+        </Border>
+    </Grid>
+</UserControl>

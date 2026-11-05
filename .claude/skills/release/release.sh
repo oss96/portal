@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Cut a Portal release: bump Cargo.toml, build portal.exe, commit, branch,
+# Cut a Portal release: bump Directory.Build.props, publish portal.exe, commit, branch,
 # tag, push, then publish the release with the binary on Forgejo.
 #
 # Usage:
 #   release.sh X.Y.Z                 full release
 #   release.sh X.Y.Z --dry-run       validate and print the plan; change nothing
 #   release.sh X.Y.Z --publish-only  skip the git steps and publish an already
-#                                    pushed tag from target/release/portal.exe
+#                                    pushed tag from publish/portal.exe
 #
 # The Forgejo token is read from the git credential store at runtime and is
 # never printed. Run from anywhere inside the repository.
@@ -27,7 +27,8 @@ esac
 cd "$(git rev-parse --show-toplevel)"
 
 APP_NAME="Portal"
-EXE="target/release/portal.exe"
+EXE="publish/portal.exe"
+PROPS="Directory.Build.props"
 ASSET_NAME="portal.exe"
 
 # Remote coordinates come from origin, e.g. https://git.ossalali.com/oss/Portal.git
@@ -105,25 +106,27 @@ if [[ "$MODE" == "--dry-run" ]]; then
 fi
 
 if [[ "$MODE" != "--publish-only" ]]; then
-  step "Setting Cargo.toml version to $VERSION"
-  sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" Cargo.toml
-  grep -q "^version = \"$VERSION\"" Cargo.toml || die "failed to set the version in Cargo.toml"
+  step "Setting the version in $PROPS to $VERSION"
+  sed -i "s|<Version>[^<]*</Version>|<Version>$VERSION</Version>|" "$PROPS"
+  grep -q "<Version>$VERSION</Version>" "$PROPS" || die "failed to set the version in $PROPS"
 
-  step "Building the release binary"
-  cargo build --release
+  step "Testing and publishing the release binary"
+  dotnet test Portal.slnx -c Release -nologo -v q
+  rm -rf publish
+  dotnet publish app/Portal/Portal.csproj -c Release -r win-x64 -o publish -nologo -v q
   [[ -f "$EXE" ]] || die "$EXE not found after the build"
 
-  # winresource stamps CARGO_PKG_VERSION into the exe; make sure we built the bumped tree.
+  # The SDK stamps <Version> into the exe; make sure we built the bumped tree.
   EXE_VERSION="$(powershell.exe -NoProfile -Command "(Get-Item '$EXE').VersionInfo.FileVersion" | tr -d '\r')"
   [[ "$EXE_VERSION" == "$VERSION" || "$EXE_VERSION" == "$VERSION.0" ]] \
     || die "built binary reports version '$EXE_VERSION', expected $VERSION"
 
   CHANGED="$(git status --porcelain | awk '{print $2}' | sort | tr '\n' ' ')"
-  [[ "$CHANGED" == "Cargo.lock Cargo.toml " || "$CHANGED" == "Cargo.toml " ]] \
+  [[ "$CHANGED" == "$PROPS " ]] \
     || die "unexpected changes after the build: $CHANGED"
 
   step "Committing, branching and tagging"
-  git add Cargo.toml Cargo.lock
+  git add "$PROPS"
   git commit -q -m "Release $VERSION"
   git branch "release/$VERSION"
   git tag -a "$VERSION" -m "$APP_NAME $VERSION"

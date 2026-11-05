@@ -38,12 +38,13 @@ pushing them. The release request itself authorises pushing `main`,
 bash .claude/skills/release/release.sh X.Y.Z
 ```
 
-In order: sets the `[package]` version in `Cargo.toml`, runs
-`cargo build --release`, checks the exe's embedded file version, commits
+In order: sets `<Version>` in `Directory.Build.props`, runs `dotnet test`,
+publishes the single-file `publish/portal.exe` (self-contained, win-x64),
+checks the exe's embedded file version, commits
 `Release X.Y.Z` on `main`, creates the `release/X.Y.Z` branch and the annotated
 tag at that commit, pushes all three, deletes the previous release entry on
 Forgejo (its tag stays), creates the new release with a changelog from
-`git log`, and uploads `target/release/portal.exe`.
+`git log`, and uploads `publish/portal.exe`.
 
 Report the printed release URL to the user.
 
@@ -53,7 +54,7 @@ Report the printed release URL to the user.
   `git reset --hard origin/main`, and rerun.
 - **After the push** (Forgejo API): the tag and commit are already on origin.
   Rerun with `--publish-only` to publish from the existing tag and the exe
-  already in `target/release`:
+  already in `publish/`:
 
   ```
   bash .claude/skills/release/release.sh X.Y.Z --publish-only
@@ -61,7 +62,7 @@ Report the printed release URL to the user.
 
 ## What the in-app updater expects
 
-`src/update.rs` reads `/releases/latest` from this repository, so a release is only
+`app/Portal.Core/Updates` reads `/releases/latest` from this repository, so a release is only
 picked up when the tag is bare `X.Y.Z`, the release is neither a draft nor a
 prerelease, and the attached binary is named exactly `portal.exe`. The script
 already satisfies all three; keep it that way when changing it. The repository is

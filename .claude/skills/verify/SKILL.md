@@ -5,55 +5,66 @@ description: Verify Portal - which test suites exist, what each covers, and how 
 
 # Verifying Portal
 
-Portal has no CI. Everything below runs on the development machine and needs no
-window, so there is nothing to schedule on the guest VM.
+Portal has no CI. The first three checks run on the development machine and open no window. The live-window check runs on the Windows CI VM.
 
-## 1. Unit tests — always
-
-```
-cargo test
-```
-
-Nine tests, all offline. They cover release-version parsing and comparison,
-the release-host allowlist, the update-selection rules (newer only, drafts and
-prereleases skipped, missing or foreign asset rejected) and the `.old` / `.new`
-sibling paths.
-
-## 2. Network tests — when the updater or the release flow changed
+## 1. Unit tests: always
 
 ```
-cargo test -- --ignored
+dotnet test Portal.slnx
 ```
 
-Three tests against the live Forgejo instance: the release feed still has the
-shape the client expects, a check driven through the app's own multi-threaded
-runtime reports back the way the UI reads it, and a real download of the
-published `portal.exe` plus the rename swap, in a scratch directory. They need
-`git.ossalali.com` to be reachable.
+About 150 offline tests:
 
-## 3. Screenshot harness — when anything on screen changed
+- **Formatting and paths:** permission formatting, remote paths, parsing of `df`, `find` and passwd output.
+- **SSH setup:** SSH config resolution, known_hosts matching (hashed entries, wildcards, revoked keys), shell quoting.
+- **Transfer engine:** over an in-memory server. Conflicts, keep-both names, apply-to-rest, a failed item next to a good one, retry resuming from the partial file.
+- **Settings:** including the import of the old Portal's files.
+- **Updater:** version rules, host allowlist, release selection, download checks and the swap.
+
+## 2. Real SSH server: when anything in Portal.Core talks to a server
 
 ```
-cargo run --features shots
+PORTAL_SSH_TESTS=1 dotnet test Portal.slnx
 ```
 
-Renders 15 scenes offscreen through `egui_kittest` and `egui-wgpu` on a CPU
-adapter and writes them to `target/shots/` with an `index.json`. No window is
-opened and no input is sent anywhere, so it is deterministic and needs no GPU.
-**Open the PNGs and look at them** — the harness proves the frame rendered, not
-that it is right.
+Starts two `lscr.io/linuxserver/openssh-server` containers in Docker with a freshly generated key on random localhost ports, one of them limited to SFTP (`ForceCommand internal-sftp`), and removes them afterwards. Docker must be running.
 
-Scenes: the connect view (dark and light), a local pane plain and with rows
-selected, a remote pane with the permission columns (dark and light), the
-Updates section in all seven states, and the transfer rows in all four
-statuses. Add a scene by adding a `Scene` to `scenes()` in `src/app/shots.rs`.
+Covers:
+
+- **Host keys:** first-connect trust and remembering the key, a declined key, a changed key.
+- **Sign-in:** password, and a wrong password.
+- **Files:** upload (mtime kept), folder upload and download, replace keeping the mode, rename, copy and move on the server.
+- **Server commands:** `du`, `df`, search (busybox fallback) and delete.
+- **Permissions:** recursive changes touch only the bits that changed.
+- **Copy and move on the server:** conflicts, Keep both names, "x - Copy" in the same folder, replace by policy.
+- **SFTP-only account:** connect, upload and replace, chmod, folder size and delete without a shell.
+- **Host keys again:** a key of a type not on record counts as a changed identity.
+
+## 3. Screens: when anything on screen changed
+
+```
+dotnet run --project app/Portal.Shots
+dotnet run --project app/Portal.Shots -- --light
+```
+
+Renders 14 scenes per theme to `target/shots-wpf/` through `RenderTargetBitmap`, over an in-memory server: connect, connect progress and error, host-key dialog, browser, This PC next to the server, permissions, delete, conflict, settings, transfers with a failed item, empty folder, filter with no match, command search, toasts with a lost connection. No window opens.
+
+**Open the PNGs and look at them.** The harness proves the views render, not that they are right.
+
+Add a scene in `app/Portal.Shots/Program.cs`. Render each theme in its own process: switching `ThemeMode` at runtime does not re-theme offscreen visuals.
+
+## 4. Live window: on the Windows CI VM, never here
+
+Suite id `portal-ui` runs `.claude/skills/verify/suites/test-ui.ps1` in the guest through the `forgejo-vm` MCP server. Queue it the way the `vm-queue` skill says.
+
+It runs checks 1 and 3, then starts the real `portal.exe` with a private profile (`PORTAL_CONFIG_DIR`, `PORTAL_SSH_DIR`). It drives the connect form through UI Automation patterns only, captures the window into `target/ui-check/`, and closes the window through its WindowPattern.
+
+It needs the .NET 10 SDK in the guest, and the route added to Forgejo-VM-MCP (`run-suite-portal-ui.ps1` plus its allowlist entry).
 
 ## What none of this covers
 
-The browser view holds a live `russh` handle and an `SftpSession`, so it cannot
-be built from a fixture: the two-pane layout as a whole, the toolbar (including
-the update chip), the drag-and-drop between panes, the dialogs, and real mouse
-input are not exercised. Neither is window creation or the relaunch after an
-update. Reaching those would need either an SFTP trait seam so the panes can be
-driven from a fake, or a guest suite in `Forgejo-VM-MCP` that launches
-`portal.exe`. Neither exists yet — say so rather than implying they passed.
+- **Behaviour against real servers:** transfer speed against Tower, Unraid's shfs, root-owned paths, chown to other users, and fail2ban on Hetzner are not exercised.
+- **Live-window interactions:** drag and drop with Explorer, and the browser screen in a real window.
+- **Updates:** the relaunch after an update.
+
+Say so rather than implying they passed.
