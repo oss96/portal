@@ -21,7 +21,7 @@ The interactive prototype is `docs/design/portal-prototype.html`. The app follow
 ```
 
 - **Sidebar:** 232 px. **Details pane:** 296 px.
-- **Two panes:** the This PC pane shares the middle with the server pane. While it's closed, a 44 px rail (`PaneRail` in `Themes/Styles.xaml`) holds its place at the left edge of the file area. Click the rail, or drag server files over it, to open the pane. The ‹ button at the far left of the This PC pane folds it back into the rail. Ctrl+K also has Show and Hide This PC.
+- **Two panes:** the This PC pane shares the middle with the server pane. While it's closed, a 44 px rail (`PaneRail` in `Themes/Styles.xaml`) holds its place at the left edge of the file area. Click the rail, or drag server files over it, to open the pane. The hide-pane button at the far left of the This PC pane (the `E8A0` glyph the command bar used before) folds it back into the rail. The rail's own button shows the mirrored `E89F` glyph. Ctrl+K also has Show and Hide This PC.
 - **Narrow windows:** when both panes are open and the window is narrower than 1440 px, the details pane steps aside so the file lists keep room for their columns.
 - **Transfers:** a flyout above the status bar, not a permanent panel. The status bar always shows the count, time left and overall progress.
 - **Dialogs:** in-window over a dimmed backdrop. Dialogs that need an answer (conflict, host key) ignore clicks on the backdrop.

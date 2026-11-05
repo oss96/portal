@@ -194,7 +194,7 @@
                         ToolTip="Show This PC next to the server" AutomationProperties.Name="Show This PC">
                     <StackPanel>
                         <Border Width="28" Height="28" CornerRadius="4" Background="{DynamicResource SubtleFillColorSecondaryBrush}">
-                            <TextBlock Style="{StaticResource Icon}" Text="&#xE76C;" FontSize="12" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            <TextBlock Style="{StaticResource Icon}" Text="&#xE89F;" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
                         <TextBlock Style="{StaticResource Icon}" Text="{Binding Local.TitleGlyph}" HorizontalAlignment="Center" Margin="0,12,0,10" Foreground="{DynamicResource TextFillColorSecondaryBrush}" />
                         <TextBlock Text="This PC" FontWeight="SemiBold" HorizontalAlignment="Center">
