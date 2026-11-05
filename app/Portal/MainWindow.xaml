@@ -13,6 +13,9 @@
         <DataTemplate DataType="{x:Type vm:ConnectViewModel}">
             <views:ConnectView />
         </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:ConnectingViewModel}">
+            <views:ConnectingView />
+        </DataTemplate>
         <DataTemplate DataType="{x:Type vm:BrowserViewModel}">
             <views:BrowserView />
         </DataTemplate>

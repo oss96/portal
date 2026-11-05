@@ -72,6 +72,7 @@ Portal uses WPF's built-in Fluent theme (`ThemeMode`) and its resource keys, so 
   - No filter match: a Clear filter button.
   - Load error: the reason, Try again and Go up.
   - Lost connection: a banner with Reconnect.
+  - Connecting at startup, or to another server from the sidebar or Ctrl+K: the browser layout with the steps and Cancel where the server's files go. A failure stays there with Try again and Edit server. Only Connect on a card of the connect screen shows progress on that card.
 - **Feedback:**
   - Toasts for results, with one action each (Open folder, Show transfers, Retry).
   - Errors stay until closed; everything else fades after 5 to 8 seconds.
@@ -88,4 +89,5 @@ Portal uses WPF's built-in Fluent theme (`ThemeMode`) and its resource keys, so 
 
 Newest first.
 
+- **2026-11-05: Connecting no longer shows the connect screen.** At startup Portal opened the connect screen with every server card and the add-server form while it reconnected to the last server. It now opens in the browser layout, with the connect progress in the server pane, the saved servers in the sidebar, and the status bar saying "Connecting to Tower…". Cancel returns to the open connection, or to the connect screen when there is none.
 - **2026-11-05: This PC toggle moved to where the pane opens.** The toggle sat at the far right of the command bar, but the pane opens at the far left of the file area. It's now a collapsed rail in the pane's place, with a fold button in the pane's header. Proposal: `design/proposals/2026-11-05-this-pc-toggle.html`, option C (collapsed rail), chosen by the owner over A (pane-edge button) and B (sidebar switch).

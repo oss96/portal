@@ -39,6 +39,7 @@ public partial class App : Application
         var (target, port) = CommandLine.Parse(e.Args);
         var store = SettingsStore.Default;
         var main = new MainViewModel(store);
+        var startServer = main.PrepareStart(target, port);
         DispatcherUnhandledException += (_, args) =>
         {
             args.Handled = true;
@@ -49,7 +50,7 @@ public partial class App : Application
         var window = new MainWindow(main, store);
         MainWindow = window;
         window.Show();
-        await main.StartAsync(target, port);
+        await main.StartAsync(startServer);
     }
 }
 

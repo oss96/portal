@@ -124,6 +124,14 @@ public static class Program
             tower.Reset();
             hetzner.Reset();
             _main.Connect.CancelEditCommand.Execute(null);
+            _main.Current = new ConnectingViewModel(_main, tower);
+            tower.Begin();
+            tower.SetStage(ConnectStage.VerifyingIdentity);
+            await Shot("16-startup-connecting", "At startup Portal connects to the last server in the browser layout");
+            tower.Fail("Couldn’t reach “tower”", "The connection timed out. Check that the server is on and that this PC is on the same network or connected to Tailscale.");
+            await Shot("17-startup-connect-error", "A failed connect at startup stays in the browser layout with Try again");
+            tower.Reset();
+            _main.ShowConnect();
             var hostKey = _main.Dialogs.ShowAsync(new HostKeyDialogViewModel(new HostKeyInfo("tower", 22, "ssh-ed25519", "SHA256:3pQ1mJ2b8vXc0kR7yT5uW9zN4aL6eF0hG2iD8sC1oPq", @"C:\Users\Oss\.ssh\known_hosts")));
             await Shot("03-dialog-host-key", "First-connect host key check");
             _main.Dialogs.Current?.Dismiss();

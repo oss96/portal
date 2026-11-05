@@ -91,6 +91,8 @@ public sealed partial class ServerCardViewModel(ServerProfile profile, MainViewM
         return _connecting.Token;
     }
 
+    internal bool IsAttempt(CancellationToken attempt) => _connecting?.Token == attempt;
+
     internal void SetStage(ConnectStage stage)
     {
         var index = (int)stage;

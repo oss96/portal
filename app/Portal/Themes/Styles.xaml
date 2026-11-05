@@ -1,7 +1,8 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                     xmlns:sys="clr-namespace:System;assembly=System.Runtime"
-                    xmlns:local="clr-namespace:Portal">
+                    xmlns:local="clr-namespace:Portal"
+                    xmlns:vm="clr-namespace:Portal.ViewModels">
 
     <FontFamily x:Key="IconFont">Segoe Fluent Icons, Segoe MDL2 Assets</FontFamily>
     <FontFamily x:Key="MonoFont">Cascadia Mono, Cascadia Code, Consolas</FontFamily>
@@ -195,4 +196,24 @@
         </Style.Triggers>
     </Style>
 
+
+    <DataTemplate DataType="{x:Type vm:ConnectStepViewModel}">
+        <StackPanel Orientation="Horizontal" Margin="0,2">
+            <Grid Width="16" Margin="0,0,8,0">
+                <TextBlock x:Name="Done" Style="{StaticResource Icon}" Text="&#xE73E;" FontSize="12" Foreground="{DynamicResource SystemFillColorSuccessBrush}" Visibility="Collapsed" />
+                <TextBlock x:Name="Busy" Style="{StaticResource Spinner}" FontSize="12" Visibility="Collapsed" />
+            </Grid>
+            <TextBlock x:Name="Label" Text="{Binding Text}" FontSize="12" Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
+        </StackPanel>
+        <DataTemplate.Triggers>
+            <DataTrigger Binding="{Binding State}" Value="Done">
+                <Setter TargetName="Done" Property="Visibility" Value="Visible" />
+                <Setter TargetName="Label" Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
+            </DataTrigger>
+            <DataTrigger Binding="{Binding State}" Value="Active">
+                <Setter TargetName="Label" Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+                <Setter TargetName="Busy" Property="Visibility" Value="Visible" />
+            </DataTrigger>
+        </DataTemplate.Triggers>
+    </DataTemplate>
 </ResourceDictionary>

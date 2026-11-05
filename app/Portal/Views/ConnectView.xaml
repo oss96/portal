@@ -67,29 +67,7 @@
                                     </StackPanel>
 
                                     <ItemsControl Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" ItemsSource="{Binding Steps}" Margin="16,12,0,0" Focusable="False"
-                                                  Visibility="{Binding IsBusy, Converter={StaticResource Visible}}">
-                                        <ItemsControl.ItemTemplate>
-                                            <DataTemplate DataType="{x:Type vm:ConnectStepViewModel}">
-                                                <StackPanel Orientation="Horizontal" Margin="0,2">
-                                                    <Grid Width="16" Margin="0,0,8,0">
-                                                        <TextBlock x:Name="Done" Style="{StaticResource Icon}" Text="&#xE73E;" FontSize="12" Foreground="{DynamicResource SystemFillColorSuccessBrush}" Visibility="Collapsed" />
-                                                        <TextBlock x:Name="Busy" Style="{StaticResource Spinner}" FontSize="12" Visibility="Collapsed" />
-                                                    </Grid>
-                                                    <TextBlock x:Name="Label" Text="{Binding Text}" FontSize="12" Foreground="{DynamicResource TextFillColorTertiaryBrush}" />
-                                                </StackPanel>
-                                                <DataTemplate.Triggers>
-                                                    <DataTrigger Binding="{Binding State}" Value="Done">
-                                                        <Setter TargetName="Done" Property="Visibility" Value="Visible" />
-                                                        <Setter TargetName="Label" Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
-                                                    </DataTrigger>
-                                                    <DataTrigger Binding="{Binding State}" Value="Active">
-                                                        <Setter TargetName="Label" Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
-                                                        <Setter TargetName="Busy" Property="Visibility" Value="Visible" />
-                                                    </DataTrigger>
-                                                </DataTemplate.Triggers>
-                                            </DataTemplate>
-                                        </ItemsControl.ItemTemplate>
-                                    </ItemsControl>
+                                                  Visibility="{Binding IsBusy, Converter={StaticResource Visible}}" />
 
                                     <Border Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Margin="16,12,0,0" Padding="12,10" CornerRadius="4"
                                             Background="{DynamicResource SystemFillColorCriticalBackgroundBrush}" Visibility="{Binding HasError, Converter={StaticResource Visible}}">
