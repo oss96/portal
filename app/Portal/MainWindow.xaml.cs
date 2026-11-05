@@ -47,7 +47,7 @@ public partial class MainWindow : Window
             b.Dispose();
             await b.Session.DisposeAsync();
         }
-        Close();
+        _ = Dispatcher.BeginInvoke(Close);
     }
 
     private void Restore(WindowPlacement p)
